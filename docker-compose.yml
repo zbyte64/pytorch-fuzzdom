@@ -1,0 +1,21 @@
+version: '2'
+services:
+  app:
+    build: .
+    image: fuzzdom
+    environment:
+      SELENIUM_URL: http://selenium:4444/wd/hub
+    links:
+      - selenium
+    volumes:
+      - ./fuzzdom:/code/fuzzdom
+      - ./miniwob-plusplus-demos:/code/miniwob-plusplus-demos
+      - ./tmp:/tmp
+      - ./datadir:/code/datadir
+      - ./trained_models:/code/trained_models
+  selenium:
+    image: selenium/standalone-chrome
+    volumes:
+      - ./miniwob-plusplus/python/miniwob:/opt/conda/lib/python3.6/site-packages/miniwob
+    ports:
+      - 4444:4444

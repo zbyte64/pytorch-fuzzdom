@@ -1,0 +1,7 @@
+**/.git
+**/__pycache__
+*~
+*.swp
+**/.cache
+/datadir
+/tmp
