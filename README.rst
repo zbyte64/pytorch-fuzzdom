@@ -10,7 +10,7 @@ Usage
 Example login with arsenic::
 
   from fuzzdom.action_chains import FuzzyActionChains
-  
+
   await driver.get("http://localhost/login")
   actions = FuzzyActionChains(
       driver, "Enter username and password and login"
@@ -23,9 +23,14 @@ Example login with arsenic::
 Setup
 =====
 
-  Getting Started::
+Getting Started::
 
-    docker-compose build
+  docker-compose build
+
+
+Run Unit tests::
+
+  docker-compose run app pytest /code/fuzzdom
 
 
 Training
@@ -42,10 +47,6 @@ Train agent::
 
   docker-compose run app python -m fuzzdom.train.graph --num-processes=20 --num-steps=30 --log-interval=1 --algo=ppo --env-name=levels
 
-Run Unit tests::
-
-  docker-compose run app pytest /code/fuzzdom
-
 
 Inspirations
 ============
@@ -54,3 +55,11 @@ Reinforcement Learning on Web Interfaces using Workflow
 https://arxiv.org/pdf/1802.08802
 
 https://github.com/Sheng-J/DOM-Q-NET
+
+
+Software Used
+=============
+
+* https://github.com/stanfordnlp/miniwob-plusplus
+* https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail
+* https://github.com/rusty1s/pytorch_geometric
