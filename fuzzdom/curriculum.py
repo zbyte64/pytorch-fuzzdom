@@ -56,6 +56,7 @@ class LevelTracker:
     running_levels = defaultdict(lambda: 0)
 
     def __init__(self, levels, predictor, num_processes, K=2):
+        #TODO support a list of list of levels, 0-dim represents task type, 1-dim difficulty
         self.predictor = predictor
         self.levels = levels
         self.num_processes = num_processes
@@ -91,46 +92,17 @@ class LevelTracker:
             self.running_levels[self.current_level] -= 1
         self.rank_levels()
         probs = self.predictor._level_probs.clone().detach()
-        ranks = list(
-            filter(
-                lambda x: x[0] < 0.85 and x[0] > 0.2 and self.level_stats[x[1]]["fail"],
-                zip(probs.view(-1).tolist(), range(0, probs.shape[1])),
-            )
-        )
-        ranks.sort(key=lambda x: x[0], reverse=True)
 
-        # train on top K levels (and those seen in the past)
-        for prob, idx in ranks[: self.K]:
-            if self.level_stats[idx]["pass"] > 4:
-                self.past_top_k.append(idx)
-        top_counts = Counter(self.past_top_k)
-        train_targets = [idx for idx, c in top_counts.most_common(self.K)]
-        C = max(self.num_processes // self.K - 1, 0)
-        running = set(
-            map(lambda x: x[0], filter(lambda x: x[1] > C, self.running_levels.items()))
-        )
-        choices = [idx for idx in train_targets if idx not in running]
-        if choices:
-            self.current_level = random.choice(choices)
-            self.task_runs = 100
+        # sample other levels
+        if self.running_levels:
+            min_run = min(*self.running_levels.values())
         else:
-            # sample other levels
-            # a single mountain peak to favor the not-yet mastered
-            running = list(
-                map(
-                    lambda x: x[0],
-                    filter(lambda x: x[1] > 0, self.running_levels.items()),
-                )
-            )
-            peak = 0.75
-            mastered_mask = probs > peak
-            running_mask = torch.tensor(running, dtype=torch.long)
-            probs[0, running_mask] = 0
-            probs[mastered_mask] *= 1 - (probs[mastered_mask] - peak) / (1 - peak)
-            probs += 1e-4
-            dist = Categorical(logits=probs)
-            self.current_level = dist.sample().item()
-            self.task_runs = 10
+            min_run = 0
+        not_running = list(
+            filter(lambda x: self.running_levels[x] == min_run, range(len(self.levels))),
+        )
+        self.current_level = random.choice(not_running)
+        self.task_runs = 10
         # self.current_level = max(min(self.current_level, len(self.levels) - 1), 0)
         self.running_levels[self.current_level] += 1
 

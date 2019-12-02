@@ -39,7 +39,7 @@ MINIWOB_TASKS = [
         # "focus-text",
         ## identify which of N and action
         # only visual differences:
-        "click-test-2",
+        #"click-test-2",
         # TODO: sometimes broken, generates duplicate button labels
         # "click-button",
         "click-widget",
@@ -47,40 +47,40 @@ MINIWOB_TASKS = [
         # different meaning of target
         # "focus-text-2",
         # "click-dialog",
-        "click-tab",
+        #"click-tab",
         # chrome only
         "click-dialog-2",
         # tokenize color? "click-color",
-        "click-button-sequence",
+        #"click-button-sequence",
         ## sequences
         ## sequence and final action
         "click-option",
         "click-checkboxes",
-        "choose-list",
+        #"choose-list",
         "enter-text",
         # requires changing case
         # "enter-text-2",
         "enter-text-dynamic",
         "login-user",
         "enter-password",
-        "login-user-popup",
+        #"login-user-popup",
         #"click-checkboxes-large",
         # objectives not parsed:
         # "enter-time",
         ## search for and action
         "navigate-tree",
         "social-media",
-        "click-tab-2-easy",
-        "click-tab-2-medium",
+        #"click-tab-2-easy",
+        #"click-tab-2-medium",
         "click-tab-2",
         "email-inbox-delete",
-        "email-inbox-forward",
-        "email-inbox-important",
-        "email-inbox-noscroll",
-        "email-inbox-star-reply",
+        #"email-inbox-forward",
+        #"email-inbox-important",
+        #"email-inbox-noscroll",
+        #"email-inbox-star-reply",
         # paste data
         #"multi-layouts",
-        "multi-orderings",
+        #"multi-orderings",
         # incomplete fields
         # "copy-paste",
         # "copy-paste-2",
@@ -88,26 +88,26 @@ MINIWOB_TASKS = [
         #"read-table-2",
         #"social-media-all",
         # requires counting onto next page
-        # "search-engine",
-        "click-tab-2-hard",
+        "search-engine",
+        #"click-tab-2-hard",
         ## custom widget inputs
         #"enter-date",
         ## abstract reasoning, probably impossible
         # objective not parsed: "use-spinner"
-        "email-inbox-reply",
-        "email-inbox",
-        "book-flight-nodelay",
-        "choose-date-nodelay",
+        #"email-inbox-reply",
+        #"email-inbox",
+        #"book-flight-nodelay",
+        #"choose-date-nodelay",
         #"click-collapsible-nodelay",
         #"click-collapsible-2-nodelay",
-        "use-autocomplete-nodelay",
-        "click-pie-nodelay",
+        #"use-autocomplete-nodelay",
+        #"click-pie-nodelay",
         # tasks with delays
-        "book-flight",
-        "choose-date-easy",
-        "choose-date",
-        "click-collapsible",
-        "click-collapsible-2",
+        #"book-flight",
+        #"choose-date-easy",
+        #"choose-date",
+        #"click-collapsible",
+        #"click-collapsible-2",
         "use-autocomplete",
         # "guess-number",
         # "identify-shape",
