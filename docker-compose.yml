@@ -1,4 +1,4 @@
-version: '2'
+version: '3'
 services:
   app:
     build: .
@@ -13,9 +13,12 @@ services:
       - ./tmp:/tmp
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models
+      - miniwob-volume:/opt/conda/lib/python3.6/site-packages/miniwob
   selenium:
     image: selenium/standalone-chrome
     volumes:
-      - ./miniwob-plusplus/python/miniwob:/opt/conda/lib/python3.6/site-packages/miniwob
+      - miniwob-volume:/opt/conda/lib/python3.6/site-packages/miniwob:ro
     ports:
       - 4444:4444
+volumes:
+  miniwob-volume:
