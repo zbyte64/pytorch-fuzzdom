@@ -218,25 +218,25 @@ class MiniWoBGraphEnvironment(gym.Env):
         self._levels = levels
         self._web = web_interface
         self._actions = [
-            lambda: (
-                self.state.current_dom_element.ref
+            lambda ref, value: (
+                ref
                 and self.driver.execute_script(
-                    f"return core.elementClick({self.state.current_dom_element.ref});"
+                    f"return core.elementClick({ref});"
                 )
                 or None
             ),
-            lambda: send_keys(
+            lambda ref, value: send_keys(
                 self.driver,
-                self.state.current_field or "",
-                self.state.current_dom_element.ref,
+                value,
+                ref,
             ),
-            lambda: self.set_state(self.state.copy_node_text()),
-            lambda: send_keys(
+            lambda ref, value: self.set_state(self.state.copy_node_text(ref)),
+            lambda ref, value: send_keys(
                 self.driver,
-                self.state.clipboard_text or "",
-                self.state.current_dom_element.ref,
+                self.state.clipboard_text,
+                ref,
             ),
-            lambda: asyncio.sleep(0.5),
+            lambda ref, value: asyncio.sleep(0.5),
         ]
         self._action_meanings = [
             "Click Node",
@@ -278,8 +278,6 @@ class MiniWoBGraphEnvironment(gym.Env):
             self.state.fields,
             await self.wob_dom(),
             None,  # await self._web.get_img(),
-            self.state.dom_position,
-            self.state.field_position,
         )
 
     def set_state(self, state):
@@ -311,15 +309,12 @@ class MiniWoBGraphEnvironment(gym.Env):
         return loop.run_until_complete(self.async_step(action))
 
     async def async_step(self, action) -> tuple:
-        action_id, node_id, field_id = action
-        assert node_id < len(self.state.dom_graph)
-        assert field_id < len(self.state.fields)
-        self.state.dom_position = node_id
-        self.state.field_position = field_id
+        action_id, ref, value = action
+        assert ref in self.state.dom_graph
         f = self._actions[action_id]
 
         start_time = time.time()
-        waitable = f()
+        waitable = f(ref, value)
         if waitable is not None:
             await waitable
         # wait for an amount of time but take into account future js execution time
@@ -390,7 +385,7 @@ class MiniWoBGraphEnvironment(gym.Env):
         # Get the DOM
         dom_graph = await self.wob_dom()
         img = None  # await self._web.get_img()
-        state = MiniWoBGraphState(response, fields, dom_graph, img, 0, 0)
+        state = MiniWoBGraphState(response, fields, dom_graph, img)
         return state
 
     async def get_metadata(self) -> dict:
@@ -448,7 +443,7 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
         fields = self.fields
         # Get the DOM
         dom_graph = await self.wob_dom()
-        state = MiniWoBGraphState(utterance, fields, dom_graph, None, 0, 0)
+        state = MiniWoBGraphState(utterance, fields, dom_graph, None)
         return state
 
     async def wob_dom(self) -> nx.DiGraph:

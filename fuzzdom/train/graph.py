@@ -16,12 +16,7 @@ from a2c_ppo_acktr.model import Policy
 from fuzzdom.env import MiniWoBGraphEnvironment
 from fuzzdom.models import GNNBase
 from fuzzdom.storage import StorageReceipt, ReceiptRolloutStorage
-from fuzzdom.vec_env import (
-    GraphGymWrapper,
-    ReceiptsGymWrapper,
-    make_vec_envs,
-    GraphActionWrapper,
-)
+from fuzzdom.vec_env import make_vec_envs
 from fuzzdom.distributions import NodeObjective
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
 from fuzzdom.dir_paths import MINIWOB_HTML
@@ -299,7 +294,7 @@ def main():
             )
 
             from pprint import pprint
-            
+
             pprint(LevelTracker.global_scoreboard)
 
             # tensorboard_writer.add_histogram(

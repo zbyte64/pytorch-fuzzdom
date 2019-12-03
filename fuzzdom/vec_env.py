@@ -168,18 +168,6 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
     return o
 
 
-class GraphGymWrapper(gym.ObservationWrapper):
-    """
-    Convert graph state to tensor/Data
-    """
-
-    observation_space = gym.spaces.Discrete(np.inf)
-
-    def observation(self, obs):
-        assert isinstance(obs, MiniWoBGraphState)
-        return state_to_vector(obs)
-
-
 class ReceiptsGymWrapper(gym.ObservationWrapper):
     """
     Store complex observations in a receipt factory
@@ -196,8 +184,12 @@ class ReceiptsGymWrapper(gym.ObservationWrapper):
         return idx
 
 
-class GraphActionWrapper(gym.ActionWrapper, gym.ObservationWrapper):
+class GraphGymWrapper(gym.ActionWrapper, gym.ObservationWrapper):
+    """
+    Convert graph state to tensor/Data
+    """
     action_space = gym.spaces.Discrete(1)  # np.inf
+    observation_space = gym.spaces.Discrete(np.inf)
 
     def action(self, action):
         assert len(action) == 1, str(action)
@@ -208,10 +200,14 @@ class GraphActionWrapper(gym.ActionWrapper, gym.ObservationWrapper):
         action_id = self.last_observation.action_idx[node_idx].item()
         dom_idx = self.last_observation.dom_idx[node_idx].item()
         field_idx = self.last_observation.field_idx[node_idx].item()
-        return (action_id, dom_idx, field_idx)
+        dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]
+        field_value = list(self.last_state.fields.values)[field_idx]
+        return (action_id, dom_ref, field_value)
 
-    def observation(self, obs):
-        # assert isinstance(obs, Data)
+    def observation(self, obs:MiniWoBGraphState):
+        assert isinstance(obs, MiniWoBGraphState)
+        self.last_state = obs
+        obs = state_to_vector(obs)
         self.last_observation = obs
         return obs
 
@@ -221,7 +217,7 @@ def make_vec_envs(envs, receipts):
 
     envs = [
         ReceiptsGymWrapper(
-            GraphActionWrapper(GraphGymWrapper(env)), receipt_factory=receipts
+            GraphGymWrapper(env), receipt_factory=receipts
         )
         for env in envs
     ]
