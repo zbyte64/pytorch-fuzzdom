@@ -20,6 +20,18 @@ Example login with arsenic::
   actions.submit()
   await actions.async_perform()
 
+
+Features
+========
+
+* Graph network representation to reduce action space to a single discrete selection
+* Does not implement/imports RL Agent
+* OpenAI gym compatible environment and wrappers (adds graph action space support)
+* asyncio interface with arsenic
+
+TODO: GAIL Dataset
+
+
 Setup
 =====
 
