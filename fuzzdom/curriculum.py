@@ -44,7 +44,6 @@ MINIWOB_CHALLENGES = _miniwob_path([
     ["click-widget"],
     ["click-link"],
     ["click-dialog-2"],
-    ["click-button-sequence"],
     ["click-option"],
     ["click-checkboxes", "click-checkboxes-large"],
     ["choose-list"],
@@ -52,11 +51,17 @@ MINIWOB_CHALLENGES = _miniwob_path([
     ["login-user", "login-user-popup"],
     ["enter-password"],
     ["navigate-tree"],
-    ["social-media"],
+    ["social-media", "social-media-all", "social-media-some"],
     ["click-tab-2", "click-tab-2-medium", "click-tab-2-hard"],
-    ["email-inbox-delete", "email-inbox-forward", "email-inbox-important", "email-inbox-star-reply"],
+    ["email-inbox-delete", "email-inbox-forward", "email-inbox-important", "email-inbox-noscroll", "email-inbox-reply", "email-inbox-star-reply", "email-inbox"],
     ["search-engine"],
     ["use-autocomplete"],
+    ["choose-date-easy", "choose-date-medium", "choose-date"],
+    ["multi-layouts", "multi-orderings"],
+    ["read-table", "read-table-2"],
+    ["book-flight-nodelay"],
+    #TODO requires hover action:
+    #["click-menu", "click-menu-2"],
 ])
 
 MINIWOB_TASKS = _miniwob_path([
