@@ -1,8 +1,4 @@
 import os, sys
-
-from fuzzdom.dir_paths import MINIWOB_HTML, ROOT_DIR
-
-
 import copy
 import glob
 import time
@@ -27,99 +23,8 @@ from fuzzdom.vec_env import (
     GraphActionWrapper,
 )
 from fuzzdom.distributions import NodeObjective
-from fuzzdom.curriculum import LevelTracker, TaskCompetency
-
-
-# not all tasks work in FF, but they tend to all work in Chrome
-MINIWOB_TASKS = [
-    os.path.join("miniwob", f) + ".html"
-    for f in [
-        ## identify action
-        # "click-test",
-        # "focus-text",
-        ## identify which of N and action
-        # only visual differences:
-        #"click-test-2",
-        # TODO: sometimes broken, generates duplicate button labels
-        # "click-button",
-        "click-widget",
-        "click-link",
-        # different meaning of target
-        # "focus-text-2",
-        # "click-dialog",
-        #"click-tab",
-        # chrome only
-        "click-dialog-2",
-        # tokenize color? "click-color",
-        #"click-button-sequence",
-        ## sequences
-        ## sequence and final action
-        "click-option",
-        "click-checkboxes",
-        #"choose-list",
-        "enter-text",
-        # requires changing case
-        # "enter-text-2",
-        "enter-text-dynamic",
-        "login-user",
-        "enter-password",
-        #"login-user-popup",
-        #"click-checkboxes-large",
-        # objectives not parsed:
-        # "enter-time",
-        ## search for and action
-        "navigate-tree",
-        "social-media",
-        #"click-tab-2-easy",
-        #"click-tab-2-medium",
-        "click-tab-2",
-        "email-inbox-delete",
-        #"email-inbox-forward",
-        #"email-inbox-important",
-        #"email-inbox-noscroll",
-        #"email-inbox-star-reply",
-        # paste data
-        #"multi-layouts",
-        #"multi-orderings",
-        # incomplete fields
-        # "copy-paste",
-        # "copy-paste-2",
-        #"read-table",
-        #"read-table-2",
-        #"social-media-all",
-        # requires counting onto next page
-        "search-engine",
-        #"click-tab-2-hard",
-        ## custom widget inputs
-        #"enter-date",
-        ## abstract reasoning, probably impossible
-        # objective not parsed: "use-spinner"
-        #"email-inbox-reply",
-        #"email-inbox",
-        #"book-flight-nodelay",
-        #"choose-date-nodelay",
-        #"click-collapsible-nodelay",
-        #"click-collapsible-2-nodelay",
-        #"use-autocomplete-nodelay",
-        #"click-pie-nodelay",
-        # tasks with delays
-        #"book-flight",
-        #"choose-date-easy",
-        #"choose-date",
-        #"click-collapsible",
-        #"click-collapsible-2",
-        "use-autocomplete",
-        # "guess-number",
-        # "identify-shape",
-        # "click-shades",
-        # "click-shape",
-        # "count-shape",
-        # "grid-coordinate",
-        # "tic-tac-toe",
-    ]
-]
-for t in MINIWOB_TASKS:
-    assert os.path.exists(os.path.join(MINIWOB_HTML, t)), t
+from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
+from fuzzdom.dir_paths import MINIWOB_HTML
 
 
 def main():
@@ -140,13 +45,10 @@ def main():
     torch.set_num_threads(1)
     device = torch.device("cuda:0" if args.cuda else "cpu")
     receipts = StorageReceipt()
-    predictor = None
     make_env = lambda tasks: MiniWoBGraphEnvironment(
         base_url=os.environ.get("BASE_URL", f"file://{MINIWOB_HTML}/"),
         levels=tasks,
-        level_tracker=LevelTracker(
-            tasks, predictor, max(int(args.num_processes * 0.75), 1)
-        ),
+        level_tracker=LevelTracker(tasks),
         wait_ms=500,
     )
 
@@ -155,13 +57,12 @@ def main():
         args.env_name = "clickbutton"
         task = "miniwob/click-button.html"
     if task == "levels":
-        tasks = MINIWOB_TASKS
+        tasks = MINIWOB_CHALLENGES
     else:
-        tasks = [task]
+        tasks = [[task]]
     print("Selected tasks:", tasks)
-    predictor = TaskCompetency(len(tasks))
     NUM_ACTIONS = 1
-    envs = make_vec_envs([make_env(tasks) for i in range(args.num_processes)], receipts)
+    envs = make_vec_envs([make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts)
 
     if os.path.exists("./datadir/autoencoder.pt"):
         dom_autoencoder = torch.load("./datadir/autoencoder.pt")
@@ -363,7 +264,6 @@ def main():
         rollouts.after_update()
 
         receipts.prune(rollouts.obs)
-        predictor.update()
 
         # save for every interval-th episode or for the last epoch
         if (
@@ -399,14 +299,8 @@ def main():
             )
 
             from pprint import pprint
-
-            scoreboard = list(LevelTracker.global_scoreboard.values())[0]
-            pprint(
-                {
-                    tasks[idx]: (count, predictor._level_probs[0, idx].item())
-                    for idx, count in LevelTracker.running_levels.items()
-                }
-            )
+            
+            pprint(LevelTracker.global_scoreboard)
 
             # tensorboard_writer.add_histogram(
             #    "task_ranks", torch.tensor(predictor._difficulty_rank), total_num_steps

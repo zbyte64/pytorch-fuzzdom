@@ -267,7 +267,7 @@ class MiniWoBGraphEnvironment(gym.Env):
 
     async def _injection_check(self):
         location = await self._web.location
-        assert location['protocol'] != 'chrome-error'
+        assert location['protocol'] != 'chrome-error:'
 
     async def refresh_state(self):
         # updates with new state with refetched dom and image
@@ -373,7 +373,12 @@ class MiniWoBGraphEnvironment(gym.Env):
 
         if seed is not None:
             await self.set_seed(seed)
-        await self.set_mode("train")
+        try:
+            await self.set_mode("train")
+        except:
+            l = await self._web.location
+            print("Exception raised from:", l["href"])
+            raise
         await self.run_script("core.startEpisodeReal();")
         self.start_time = time.time()
         self.state = await self.get_wob_state()

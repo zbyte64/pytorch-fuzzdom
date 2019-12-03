@@ -1,131 +1,145 @@
-import torch
-from torch import nn
-from torch.nn.utils.rnn import pack_sequence, pad_packed_sequence
-import torch.nn.functional as F
-from torch.distributions import Bernoulli, Categorical
-import random
-from collections import deque, defaultdict, Counter
+import os
+from collections import defaultdict
 
-from .domx import embed, short_embed
-
-
-class TaskCompetency:
-    def __init__(self, n_tasks, sample_size=100):
-        self.n_tasks = n_tasks
-        self.task_history = [deque(maxlen=sample_size) for i in range(n_tasks)]
-
-    def forward(self, task_ids):
-        tp = []
-        for task_id in task_ids:
-            c = Counter(self.task_history[task_id])
-            success = c[True]
-            fail = c[False]
-            if not success and not fail:
-                accuracy = 0.0
-            else:
-                accuracy = success / (success + fail)
-            tp.append(accuracy)
-        tp = torch.tensor(tp).view(1, -1)
-        return Bernoulli(probs=tp)
-
-    def difficulty_rank(self):
-        if not hasattr(self, "_difficulty_rank"):
-            self.compute_difficulty_rank()
-        return self._difficulty_rank
-
-    def compute_difficulty_rank(self):
-        with torch.no_grad():
-            task_idx = torch.arange(0, self.n_tasks, dtype=torch.long)
-            d = self.forward(task_idx)
-            self._level_probs = d.probs.view(1, -1)
-            p = d.probs.tolist()
-            ranks = list(zip(p, task_idx.tolist()))
-            ranks.sort(key=lambda x: x[0], reverse=True)
-        self._difficulty_rank = ranks
-
-    def update(self):
-        self.compute_difficulty_rank()
-        return 0.0
-
-    def record(self, task, pass_or_fail, task_fields):
-        self.task_history[task].append(bool(pass_or_fail))
+from .dir_paths import MINIWOB_HTML
 
 
 class LevelTracker:
-    global_scoreboard = {}
-    running_levels = defaultdict(lambda: 0)
+    global_scoreboard = defaultdict(lambda: {"pass": 0, "fail": 0})
 
-    def __init__(self, levels, predictor, num_processes, K=2):
-        #TODO support a list of list of levels, 0-dim represents task type, 1-dim difficulty
-        self.predictor = predictor
+    def __init__(self, levels:list):
         self.levels = levels
-        self.num_processes = num_processes
-        self.K = min(K, num_processes)
-        self._k = _k = hash(tuple(levels))
-        if _k in self.global_scoreboard:
-            self.level_stats = self.global_scoreboard[_k]
-        else:
-            self.level_stats = {
-                i: {"pass": 0, "fail": 0, "id": i, "level": l}
-                for i, l in enumerate(self.levels)
-            }
-            self.global_scoreboard[_k] = self.level_stats
-        self._train_data = ([], [])
-        self.past_top_k = deque(maxlen=20)
-        self.select_level()
-
-    def rank_levels(self):
-        rankings = self.predictor.difficulty_rank()
-        self.ranked_levels = list()
-        for pass_prob, level_idx in rankings:
-            self.ranked_levels.append(self.level_stats[level_idx])
-
-    def get_level_stat(self):
-        return self.level_stats[self.current_level]
-
-    def get_level(self):
-        next_level = self.get_level_stat()
-        return next_level["level"]
+        self.current_level_idx = 0
 
     def select_level(self):
-        if hasattr(self, "current_level"):
-            self.running_levels[self.current_level] -= 1
-        self.rank_levels()
-        probs = self.predictor._level_probs.clone().detach()
+        pass
 
-        # sample other levels
-        if self.running_levels:
-            min_run = min(*self.running_levels.values())
-        else:
-            min_run = 0
-        not_running = list(
-            filter(lambda x: self.running_levels[x] == min_run, range(len(self.levels))),
-        )
-        self.current_level = random.choice(not_running)
-        self.task_runs = 10
-        # self.current_level = max(min(self.current_level, len(self.levels) - 1), 0)
-        self.running_levels[self.current_level] += 1
+    @property
+    def current_level(self):
+        return self.levels[self.current_level_idx]
 
-    def __call__(self, pass_or_fail, task_fields):
-        stats = self.get_level_stat()
-        self.predictor.record(stats["id"], pass_or_fail, task_fields)
-        self.task_runs -= 1
+    def get_level(self):
+        return self.current_level
+
+    def __call__(self, pass_or_fail, task_fields=None):
+        stats = self.global_scoreboard[self.current_level]
         if pass_or_fail:
             stats["pass"] += 1
+            self.current_level_idx += 1
         else:
             stats["fail"] += 1
-        if self.task_runs < 0:
-            self.select_level()
-        return self.get_level()
+            self.current_level_idx -= 1
+        self.current_level_idx = max(0, min(len(self.levels)-1, self.current_level_idx))
 
 
-if __name__ == "__main__":
-    t = TaskSkillCompetency(40, 6)
-    # _s1 = [t.skill_proficiencies.tolist(), t.task_skills.tolist()]
-    for i in range(40):
-        t.record(i, True)
-        t.record(i, False)
-        if i > 10:
-            t.record(i, False)
-    assert t.update() > 0
-    # assert _s1 != [t.skill_proficiencies.tolist(), t.task_skills.tolist()]
+def _miniwob_path(f):
+    if isinstance(f, list):
+        return list(map(_miniwob_path, f))
+    p = os.path.join("miniwob", f) + ".html"
+    assert os.path.exists(os.path.join(MINIWOB_HTML, p)), p
+    return p
+
+
+MINIWOB_CHALLENGES = _miniwob_path([
+    ["click-widget"],
+    ["click-link"],
+    ["click-dialog-2"],
+    ["click-button-sequence"],
+    ["click-option"],
+    ["click-checkboxes", "click-checkboxes-large"],
+    ["choose-list"],
+    ["enter-text", "enter-text-dynamic"],
+    ["login-user", "login-user-popup"],
+    ["enter-password"],
+    ["navigate-tree"],
+    ["social-media"],
+    ["click-tab-2", "click-tab-2-medium", "click-tab-2-hard"],
+    ["email-inbox-delete", "email-inbox-forward", "email-inbox-important", "email-inbox-star-reply"],
+    ["search-engine"],
+    ["use-autocomplete"],
+])
+
+MINIWOB_TASKS = _miniwob_path([
+    ## identify action
+    # "click-test",
+    # "focus-text",
+    ## identify which of N and action
+    # only visual differences:
+    #"click-test-2",
+    # TODO: sometimes broken, generates duplicate button labels
+    # "click-button",
+    "click-widget",
+    "click-link",
+    # different meaning of target
+    # "focus-text-2",
+    # "click-dialog",
+    #"click-tab",
+    # chrome only
+    "click-dialog-2",
+    # tokenize color? "click-color",
+    #"click-button-sequence",
+    ## sequences
+    ## sequence and final action
+    "click-option",
+    "click-checkboxes",
+    #"choose-list",
+    "enter-text",
+    # requires changing case
+    # "enter-text-2",
+    "enter-text-dynamic",
+    "login-user",
+    "enter-password",
+    #"login-user-popup",
+    #"click-checkboxes-large",
+    # objectives not parsed:
+    # "enter-time",
+    ## search for and action
+    "navigate-tree",
+    "social-media",
+    #"click-tab-2-easy",
+    #"click-tab-2-medium",
+    "click-tab-2",
+    "email-inbox-delete",
+    #"email-inbox-forward",
+    #"email-inbox-important",
+    #"email-inbox-noscroll",
+    #"email-inbox-star-reply",
+    # paste data
+    #"multi-layouts",
+    #"multi-orderings",
+    # incomplete fields
+    # "copy-paste",
+    # "copy-paste-2",
+    #"read-table",
+    #"read-table-2",
+    #"social-media-all",
+    # requires counting onto next page
+    "search-engine",
+    #"click-tab-2-hard",
+    ## custom widget inputs
+    #"enter-date",
+    ## abstract reasoning, probably impossible
+    # objective not parsed: "use-spinner"
+    #"email-inbox-reply",
+    #"email-inbox",
+    #"book-flight-nodelay",
+    #"choose-date-nodelay",
+    #"click-collapsible-nodelay",
+    #"click-collapsible-2-nodelay",
+    #"use-autocomplete-nodelay",
+    #"click-pie-nodelay",
+    # tasks with delays
+    #"book-flight",
+    #"choose-date-easy",
+    #"choose-date",
+    #"click-collapsible",
+    #"click-collapsible-2",
+    "use-autocomplete",
+    # "guess-number",
+    # "identify-shape",
+    # "click-shades",
+    # "click-shape",
+    # "count-shape",
+    # "grid-coordinate",
+    # "tic-tac-toe",
+])
