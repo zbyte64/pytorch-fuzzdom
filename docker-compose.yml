@@ -9,7 +9,6 @@ services:
       - selenium
     volumes:
       - ./fuzzdom:/code/fuzzdom
-      - ./miniwob-plusplus-demos:/code/miniwob-plusplus-demos
       - ./tmp:/tmp
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models

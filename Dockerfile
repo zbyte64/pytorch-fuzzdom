@@ -12,8 +12,10 @@ RUN export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 RUN export DYLD_LIBRARY_PATH=/usr/local/cuda/lib:$DYLD_LIBRARY_PATH
 
 RUN mkdir -p /code
-COPY ./requirements.txt /code
 WORKDIR /code
+RUN git clone https://github.com/stanfordnlp/miniwob-plusplus-demos.git ./miniwob-plusplus-demos
+
+COPY ./requirements.txt /code
 RUN pip install -r requirements.txt
 COPY ./setup.py /code
 RUN python setup.py install

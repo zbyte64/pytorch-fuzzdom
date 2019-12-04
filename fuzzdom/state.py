@@ -26,7 +26,7 @@ class MiniWoBGraphState(object):
     def __init__(
         self,
         utterance: str,
-        fields,
+        fields: Fields,
         dom_graph: nx.DiGraph,
         screenshot: Image,
     ):

@@ -9,7 +9,6 @@ import numpy as np
 import torch
 
 from a2c_ppo_acktr import algo, utils
-from a2c_ppo_acktr.algo import gail
 from a2c_ppo_acktr.arguments import get_args
 from a2c_ppo_acktr.model import Policy
 
@@ -20,6 +19,8 @@ from fuzzdom.vec_env import make_vec_envs
 from fuzzdom.distributions import NodeObjective
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
 from fuzzdom.dir_paths import MINIWOB_HTML
+from fuzzdom import gail
+from fuzzdom.replay import ReplayRepository
 
 
 def main():
@@ -113,6 +114,7 @@ def main():
             "trajs_{}.pt".format(args.env_name.split("-")[0].lower()),
         )
 
+        rr = ReplayRepository("/code/miniwob-plusplus-demos/*turk/*")
         gail_train_loader = torch.utils.data.DataLoader(
             rr.get_dataset(),
             batch_size=args.gail_batch_size,

@@ -191,3 +191,38 @@ class Encoder(torch.nn.Module):
             return self.conv2(x, edge_index)
         else:
             return self.conv_mu(x, edge_index), self.conv_logvar(x, edge_index)
+
+
+class WoBGraphEncoder(nn.Module):
+    def __init__(self):
+        nn.Module.__init__(self, in_dim=107, out_dim=64)
+        self.conv1 = SAGEConv(in_dim, 128)
+        self.conv2 = SAGEConv(128, out_dim)
+
+    def forward(self, inputs):  # (B x 128)
+        x = torch.cat(
+            [
+                inputs[key]
+                for key in [
+                    "text",
+                    "value",
+                    "tag",
+                    "classes",
+                    "rx",
+                    "ry",
+                    "width",
+                    "height",
+                    "top",
+                    "left",
+                    "focused",
+                ]
+            ],
+            dim=1,
+        )
+        # BXN
+        x = torch.relu(self.conv1(x, edge_index))
+        x = self.conv2(x, edge_index)
+        x = global_max_pool(x, batch)
+
+        x = self.inputs_main(x, inputs.edge_index, inputs.batch)
+        return x
