@@ -33,7 +33,7 @@ class Discriminator(nn.Module):
         self.device = device
 
         self.encoder = WoBObservationEncoder(out_dim=hidden_dim)
-        self.trunk = nn.Sequential(nn.Linear(hidden_dim, 1))
+        self.trunk_fn = nn.Sequential(nn.Linear(hidden_dim, 1))
 
         self.train()
         self.to(device)
@@ -45,7 +45,18 @@ class Discriminator(nn.Module):
 
     def forward(self, inputs, votes):
         x = self.encoder(inputs, votes)
-        return self.trunk(x)
+        return self.trunk_fn(x)
+
+    def trunk(self, state, action):
+        batch_size = state.batch.max().item() + 1
+        votes = torch.zeros(state.value.shape[0], 1)
+        past = 0
+        for b_idx in range(batch_size):
+            _m = state.batch == b_idx
+            _size = _m.sum().item()
+            votes[past + action[b_idx], 0] = 1
+            past += _size
+        return self.forward(state, votes)
 
     def compute_grad_pen(
         self, expert_state, expert_action, policy_state, policy_action, lambda_=10
@@ -107,31 +118,18 @@ class Discriminator(nn.Module):
         )
         assert len(expert_loader)
 
-        def _votes(state, action):
-            batch_size = state.batch.max().item() + 1
-            votes = torch.zeros(state.value.shape[0], 1)
-            past = 0
-            for b_idx in range(batch_size):
-                _m = state.batch == b_idx
-                _size = _m.sum().item()
-                votes[past + action[b_idx], 0] = 1
-                past += _size
-            return votes
-
         loss = 0
         n = 0
         for expert_batch, policy_batch in zip(expert_loader, policy_data_generator):
             policy_state, policy_action = policy_batch[0], policy_batch[2]
             batch_size = policy_state.batch.max().item() + 1
-            policy_votes = _votes(policy_state, policy_action)
-            policy_d = self.forward(policy_state, policy_votes)
+            policy_d = self.trunk(policy_state, policy_action)
 
             expert_state, expert_action, _ = expert_batch
             # expert_state = obsfilt(expert_state.numpy(), update=False)
             # expert_state = torch.FloatTensor(expert_state).to(self.device)
             expert_action = expert_action.to(self.device)
-            expert_votes = _votes(expert_state, expert_action)
-            expert_d = self.forward(expert_state, expert_votes)
+            expert_d = self.trunk(expert_state, expert_action)
 
             expert_loss = F.binary_cross_entropy_with_logits(
                 expert_d, torch.ones(expert_d.size()).to(self.device)
@@ -156,7 +154,7 @@ class Discriminator(nn.Module):
     def predict_reward(self, state, action, gamma, masks, update_rms=True):
         with torch.no_grad():
             self.eval()
-            d = self.trunk(torch.cat([state, action], dim=1))
+            d = self.trunk(state, action)
             s = torch.sigmoid(d)
             reward = s.log() - (1 - s).log()
             if self.returns is None:

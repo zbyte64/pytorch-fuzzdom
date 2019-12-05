@@ -1,11 +1,6 @@
 import torch
 from torch import nn
-from torch_geometric.nn import (
-    SAGEConv,
-    global_max_pool,
-    GlobalAttention,
-    GCNConv
-)
+from torch_geometric.nn import SAGEConv, global_max_pool, GlobalAttention, GCNConv
 import torch.nn.functional as F
 
 from a2c_ppo_acktr.model import NNBase
@@ -45,13 +40,15 @@ class GNNBase(NNBase):
         self.dom_classes = nn.Sequential(init_t(nn.Linear(25, 5)), nn.Tanh())
         self.inputs_att_gate = nn.Sequential(init_r(nn.Linear(conv_size, 1)), nn.ReLU())
         self.inputs_attention = GlobalAttention(self.inputs_att_gate)
+        self.critic_att_gate = nn.Sequential(init_r(nn.Linear(conv_size, 1)), nn.ReLU())
+        self.critic_attention = GlobalAttention(self.inputs_att_gate)
 
         """self.main = nn.Sequential(
             init_r(nn.Linear(conv_size * 2, hidden_size)), nn.ReLU()
             #nn.Linear(conv_size * 2, hidden_size, bias=False), nn.Tanh()
         )
         """
-        self.main = nn.Bilinear(conv_size, conv_size, hidden_size)
+        self.critic_bilinear = nn.Bilinear(conv_size, conv_size, hidden_size)
 
         init_ = lambda m: init(
             m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0)
@@ -153,12 +150,11 @@ class GNNBase(NNBase):
         _x[not_leaf_mask] = 0
 
         # critic actor split here
-        global_pool = global_max_pool(_x, inputs.batch)
-
+        critic_at = self.critic_attention(_x, inputs.batch)
         inputs_at = self.inputs_attention(_x, inputs.batch)
         self.last_inputs_at = inputs_at
 
-        x = torch.tanh(self.main(inputs_at, global_pool))
+        x = torch.tanh(self.critic_bilinear(inputs_at, critic_at))
 
         # emit node_id, and field_id attention
         inputs_votes = self.inputs_att_gate(_x) + 1e-15
