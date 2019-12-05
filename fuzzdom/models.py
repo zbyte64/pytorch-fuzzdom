@@ -143,7 +143,7 @@ class GNNBase(NNBase):
             else:
                 rnn_hxs = rnn_hxs[inputs.batch]
             _x, rnn_hxs = self._forward_gru(_x, rnn_hxs, masks)
-            rnn_hxs = global_mean_pool(rnn_hxs, inputs.batch)
+            rnn_hxs = global_max_pool(rnn_hxs, inputs.batch)
 
         self.last_x = x
         self.last_query = query
@@ -193,13 +193,16 @@ class Encoder(torch.nn.Module):
             return self.conv_mu(x, edge_index), self.conv_logvar(x, edge_index)
 
 
-class WoBGraphEncoder(nn.Module):
-    def __init__(self):
-        nn.Module.__init__(self, in_dim=107, out_dim=64)
+class WoBObservationEncoder(nn.Module):
+    def __init__(self, in_dim=108, out_dim=64):
+        nn.Module.__init__(self)
         self.conv1 = SAGEConv(in_dim, 128)
         self.conv2 = SAGEConv(128, out_dim)
 
-    def forward(self, inputs):  # (B x 128)
+    def forward(self, inputs, votes):
+        edge_index = inputs.edge_index
+        batch = inputs.batch
+
         x = torch.cat(
             [
                 inputs[key]
@@ -219,10 +222,8 @@ class WoBGraphEncoder(nn.Module):
             ],
             dim=1,
         )
-        # BXN
+        x = torch.cat([x, votes], dim=1)
         x = torch.relu(self.conv1(x, edge_index))
         x = self.conv2(x, edge_index)
         x = global_max_pool(x, batch)
-
-        x = self.inputs_main(x, inputs.edge_index, inputs.batch)
         return x

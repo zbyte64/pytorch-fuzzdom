@@ -44,11 +44,38 @@ class ReplayRepository:
         return dataset[idx]
 
     def get_dataset(self):
-        source_dirs = []
+        filenames = []
         for task_name, ds in self.task_datasets.items():
             root = ds.root
-            source_dirs.extend(ds.source_dirs)
-        return MiniWobReplayDataset(root, task_name, source_dirs)
+            filenames.extend(ds.processed_file_names)
+        return RawDataset(root, filenames)
+
+
+class RawDataset(Dataset):
+    def __init__(self, root, filenames, transform=None, pre_transform=None):
+        self.filenames = filenames
+        super(RawDataset, self).__init__(root, transform, pre_transform)
+
+    @property
+    def raw_file_names(self):
+        return []
+
+    @property
+    def processed_file_names(self):
+        return self.filenames
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def download(self):
+        pass
+
+    def process(self):
+        pass
+
+    def get(self, idx):
+        data = torch.load(self.filenames[idx])
+        return data
 
 
 class MiniWobReplayDataset(Dataset):
@@ -74,7 +101,7 @@ class MiniWobReplayDataset(Dataset):
     def processed_file_names(self):
         if not os.path.exists(self.processed_dir):
             os.makedirs(self.processed_dir)
-        return [n for n in os.listdir(self.processed_dir) if n.endswith(".pt")]
+        return [osp.join(self.processed_dir, n) for n in os.listdir(self.processed_dir) if n.endswith(".pt")]
 
     def __len__(self):
         return len(self.processed_file_names)
@@ -93,7 +120,8 @@ class MiniWobReplayDataset(Dataset):
                 with gzip.GzipFile(raw_path, "r") as fin:
                     replay_json = json.load(fin)
             utterance = replay_json["utterance"]
-            if replay_json["rawReward"] <= 0 or not utterance:
+            states = replay_json["states"]
+            if replay_json["rawReward"] <= 0 or not utterance or len(states) < 2:
                 continue
             try:
                 fields = fields_factory(self.task_name, utterance)
@@ -102,7 +130,6 @@ class MiniWobReplayDataset(Dataset):
                 continue
 
             frames = []
-            states = replay_json["states"]
             current_string = ""
             last_dom_nx = last_data = None
             for j, state in enumerate(states):
@@ -181,6 +208,9 @@ class MiniWobReplayDataset(Dataset):
                     for idx in range(last_data.dom_idx.shape[0]):
                         _dom_idx = last_data.dom_idx[idx]
                         _field_idx = last_data.field_idx[idx]
+                        _action_str = ["click", 'paste_field', "copy", "paste", "wait"][last_data.action_idx[idx]]
+                        if _action_str != action_str:
+                            continue
                         _dom_ref = last_nodes[_dom_idx]
                         #_field_value = field_values[_field_idx]
                         if _dom_ref == current_node["ref"]:
@@ -193,24 +223,14 @@ class MiniWobReplayDataset(Dataset):
 
                 if self.pre_transform is not None:
                     data = self.pre_transform(data)
-                frame = {
-                    "dom": data,
-                    "action": action_str,
-                    "field_idx": field_id,
-                    "node_ref": list(last_dom_nx).index(current_node["ref"])
-                    if current_node and last_dom_nx
-                    else None,
-                    "node_idx": node_idx,
-                    "time": state["time"],
-                    "reward": 0.0,
-                }
-                frames.append(frame)
+                reward = 0.0
+                if j + 1 == len(states):
+                    reward = replay_json["rawReward"]
+                frame = (data, node_idx, reward)
                 last_dom_nx = dom_nx
                 last_data = data
-            if len(frames) > 1:
-                frames[-1]["reward"] = replay_json["rawReward"]
                 torch.save(
-                    frames, osp.join(self.processed_dir, "data_{}.pt".format(p_idx))
+                    frame, osp.join(self.processed_dir, "data_{}.pt".format(p_idx))
                 )
                 p_idx += 1
 

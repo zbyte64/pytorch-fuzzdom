@@ -19,7 +19,7 @@ from torch_geometric.data import Data, Batch
 
 from baselines.common.running_mean_std import RunningMeanStd
 
-from .models import WoBGraphEncoder
+from .models import WoBObservationEncoder
 
 
 class Discriminator(nn.Module):
@@ -32,10 +32,7 @@ class Discriminator(nn.Module):
 
         self.device = device
 
-        self.encoder = WoBGraphEncoder(hidden_dim=hidden_dim)
-        self.node_transform = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim), nn.Tanh()
-        )
+        self.encoder = WoBObservationEncoder(out_dim=hidden_dim)
         self.trunk = nn.Sequential(nn.Linear(hidden_dim, 1))
 
         self.train()
@@ -46,60 +43,57 @@ class Discriminator(nn.Module):
         self.returns = None
         self.ret_rms = RunningMeanStd(shape=())
 
-    def forward(self, inputs, actions):
-        x = self.encoder(inputs)
-        node_actions = actions[inputs.batch]
-        node_votes = inputs.votes
-        x = torch.cat([x, node_actions, node_votes], dim=1)
-        x = self.node_transform(x)
+    def forward(self, inputs, votes):
+        x = self.encoder(inputs, votes)
         return self.trunk(x)
 
     def compute_grad_pen(
         self, expert_state, expert_action, policy_state, policy_action, lambda_=10
     ):
-        alpha = torch.rand(expert_action.size(0), 1)
-        alpha = alpha.expand_as(expert_action).to(expert_action.device)
+        # merge graphs, apply alpha to vote shares
+        mixup_state = Batch()
+        for key, value in expert_state:
+            assert isinstance(key, str), str(key)
+            if key in ("edge_index", "edge_attr"):
+                continue
+            mixup_state[key] = torch.cat([expert_state[key], policy_state[key]])
+        mixup_state.edge_index = torch.cat(
+            [
+                expert_state.edge_index,
+                policy_state.edge_index + expert_state.batch.shape[0],
+            ],
+            dim=1,
+        )
 
-        # CONSIDER: how do we blend graphs of different sizes?
-        # if we squash nodes, actions make little sense
-        # we can union graphs, actions are relative probs ie concat to match node length
-        mixup_action = alpha * expert_action[:, 0] + (1 - alpha) * policy_action[:, 0]
-        mixup_action.requires_grad = True
-
-        # foreach batch combine network?
+        alpha = torch.rand(expert_action.size(0))
         batch_size = expert_state.batch.max().item() + 1
-        mixup_state = []
+        mixup_votes = []
         for i in range(batch_size):
             _em = expert_state.batch == i
             _pm = policy_state.batch == i
-            data = {}
-            for key in expert_state:
-                if key in ("edge_index", "edge_attr"):
-                    continue
-                data[key] = torch.stack(
-                    [export_state[key][_em], policy_state[key][_pm]]
-                )
-            data["votes"] = torch.stack([expert_action[_em, 1], policy_action[_pm, 1]])
-            data = Data.from_dict(data)
-            expert_graph_size = _em.sum().item()
-            data.edge_index = torch.stack(
-                [
-                    expert_action.edge_index[_em],
-                    policy_action.edge_index[_pm] + expert_graph_size,
-                ]
-            )
-            mixup_state.append(data)
-        mixup_state = Batch.from_data_list(mixup_state)
+            votes = torch.zeros((_em.sum() + _pm.sum()).item())
+            assert votes.shape[0]
+            votes[expert_action[i]] = alpha[i]
+            votes[policy_action[i] + _em.sum().item()] = 1 - alpha[i]
+            mixup_votes.append(votes)
+        mixup_action = torch.cat(mixup_votes).view(-1, 1)
+        mixup_action.requires_grad = True
 
         disc = self.forward(mixup_state, mixup_action)
         ones = torch.ones(disc.size()).to(disc.device)
+        inputs = [mixup_action]
+        for key, value in mixup_state:
+            if value.dtype == torch.float:
+                value.requires_grad = True
+                inputs.append(value)
         grad = autograd.grad(
             outputs=disc,
-            inputs=(mixup_state, mixup_action),
+            inputs=inputs,
             grad_outputs=ones,
             create_graph=True,
             retain_graph=True,
             only_inputs=True,
+            allow_unused=True,
         )[0]
 
         grad_pen = lambda_ * (grad.norm(2, dim=1) - 1).pow(2).mean()
@@ -111,24 +105,33 @@ class Discriminator(nn.Module):
         policy_data_generator = rollouts.feed_forward_generator(
             None, mini_batch_size=expert_loader.batch_size
         )
-
-        print(policy_data_generator)
         assert len(expert_loader)
+
+        def _votes(state, action):
+            batch_size = state.batch.max().item() + 1
+            votes = torch.zeros(state.value.shape[0], 1)
+            past = 0
+            for b_idx in range(batch_size):
+                _m = state.batch == b_idx
+                _size = _m.sum().item()
+                votes[past + action[b_idx], 0] = 1
+                past += _size
+            return votes
 
         loss = 0
         n = 0
         for expert_batch, policy_batch in zip(expert_loader, policy_data_generator):
             policy_state, policy_action = policy_batch[0], policy_batch[2]
-            # policy_state.votes = poli
-            print("policy_batch", policy_batch)
-            print("expert_batch", expert_batch)
-            policy_d = self.forward(policy_state, policy_action[:, 0])
+            batch_size = policy_state.batch.max().item() + 1
+            policy_votes = _votes(policy_state, policy_action)
+            policy_d = self.forward(policy_state, policy_votes)
 
-            expert_state, expert_action = expert_batch
+            expert_state, expert_action, _ = expert_batch
             # expert_state = obsfilt(expert_state.numpy(), update=False)
             # expert_state = torch.FloatTensor(expert_state).to(self.device)
             expert_action = expert_action.to(self.device)
-            expert_d = self.forward(expert_state, expert_action[:, 0])
+            expert_votes = _votes(expert_state, expert_action)
+            expert_d = self.forward(expert_state, expert_votes)
 
             expert_loss = F.binary_cross_entropy_with_logits(
                 expert_d, torch.ones(expert_d.size()).to(self.device)

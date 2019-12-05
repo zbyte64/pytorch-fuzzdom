@@ -41,16 +41,13 @@ def _miniwob_path(f):
 
 
 MINIWOB_CHALLENGES = _miniwob_path([
-    ["click-widget"],
-    ["click-link"],
-    ["click-dialog-2"],
+    ["click-link", "navigate-tree"],
+    ["click-dialog-2", "click-widget"],
     ["click-option"],
     ["click-checkboxes", "click-checkboxes-large"],
     ["choose-list"],
-    ["enter-text", "enter-text-dynamic"],
+    ["enter-text", "enter-text-dynamic", "enter-password"],
     ["login-user", "login-user-popup"],
-    ["enter-password"],
-    ["navigate-tree"],
     ["social-media", "social-media-all", "social-media-some"],
     ["click-tab-2", "click-tab-2-medium", "click-tab-2-hard"],
     ["email-inbox-delete", "email-inbox-forward", "email-inbox-important", "email-inbox-noscroll", "email-inbox-reply", "email-inbox-star-reply", "email-inbox"],

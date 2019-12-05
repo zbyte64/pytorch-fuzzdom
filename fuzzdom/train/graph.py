@@ -7,6 +7,7 @@ from collections import deque
 import gym
 import numpy as np
 import torch
+import torch_geometric
 
 from a2c_ppo_acktr import algo, utils
 from a2c_ppo_acktr.arguments import get_args
@@ -58,7 +59,9 @@ def main():
         tasks = [[task]]
     print("Selected tasks:", tasks)
     NUM_ACTIONS = 1
-    envs = make_vec_envs([make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts)
+    envs = make_vec_envs(
+        [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts
+    )
 
     if os.path.exists("./datadir/autoencoder.pt"):
         dom_autoencoder = torch.load("./datadir/autoencoder.pt")
@@ -106,20 +109,13 @@ def main():
 
     if args.gail:
         assert len(envs.observation_space.shape) == 1
-        discr = gail.Discriminator(
-            envs.observation_space.shape[0] + envs.action_space.shape[0], 100, device
-        )
-        file_name = os.path.join(
-            args.gail_experts_dir,
-            "trajs_{}.pt".format(args.env_name.split("-")[0].lower()),
-        )
+        discr = gail.Discriminator(envs.observation_space.shape[0], 100, device)
 
         rr = ReplayRepository("/code/miniwob-plusplus-demos/*turk/*")
-        gail_train_loader = torch.utils.data.DataLoader(
-            rr.get_dataset(),
-            batch_size=args.gail_batch_size,
-            shuffle=True,
-            drop_last=True,
+        ds = rr.get_dataset()
+        print("GAIL Replay Dataset", ds)
+        gail_train_loader = torch_geometric.data.DataLoader(
+            ds, batch_size=args.gail_batch_size, shuffle=True, drop_last=True
         )
 
     from tensorboardX import SummaryWriter
@@ -234,7 +230,6 @@ def main():
                 gail_epoch = 100  # Warm up
             for _ in range(gail_epoch):
                 obsfilt = lambda x, update: x  # utils.get_vec_normalize(envs)._obfilt
-                print(gail_train_loader)
                 discr.update(gail_train_loader, rollouts, obsfilt)
 
             for step in range(args.num_steps):

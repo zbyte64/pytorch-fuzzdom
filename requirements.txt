@@ -1,5 +1,6 @@
 #torch
-torch-geometric
+#torch-geometric==1.3.2
+git+https://github.com/rusty1s/pytorch_geometric.git@master#egg=pytorch-geometric
 torch-scatter
 torch-sparse
 torch-cluster
