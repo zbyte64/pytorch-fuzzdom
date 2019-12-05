@@ -17,7 +17,7 @@ from .domx import miniwob_to_graph
 
 
 class ReplayRepository:
-    def __init__(self, glob_str, root=DATA_DIR+"/replays"):
+    def __init__(self, glob_str, root=DATA_DIR + "/replays"):
         self.glob_str = glob_str
         self.folders = glob.glob(glob_str)
         self.task_datasets = {}
@@ -101,7 +101,11 @@ class MiniWobReplayDataset(Dataset):
     def processed_file_names(self):
         if not os.path.exists(self.processed_dir):
             os.makedirs(self.processed_dir)
-        return [osp.join(self.processed_dir, n) for n in os.listdir(self.processed_dir) if n.endswith(".pt")]
+        return [
+            osp.join(self.processed_dir, n)
+            for n in os.listdir(self.processed_dir)
+            if n.endswith(".pt")
+        ]
 
     def __len__(self):
         return len(self.processed_file_names)
@@ -201,18 +205,22 @@ class MiniWobReplayDataset(Dataset):
                             break
 
                 data = state_to_vector(graph_state)
-                node_idx = -1
+                node_idx = 0
+                if last_dom_nx:
+                    node_idx = random.randint(0, len(last_dom_nx))
                 if current_node and last_dom_nx:
                     last_nodes = list(last_dom_nx.nodes)
-                    #field_values = list(fields.values)
+                    # field_values = list(fields.values)
                     for idx in range(last_data.dom_idx.shape[0]):
                         _dom_idx = last_data.dom_idx[idx]
                         _field_idx = last_data.field_idx[idx]
-                        _action_str = ["click", 'paste_field', "copy", "paste", "wait"][last_data.action_idx[idx]]
+                        _action_str = ["click", "paste_field", "copy", "paste", "wait"][
+                            last_data.action_idx[idx]
+                        ]
                         if _action_str != action_str:
                             continue
                         _dom_ref = last_nodes[_dom_idx]
-                        #_field_value = field_values[_field_idx]
+                        # _field_value = field_values[_field_idx]
                         if _dom_ref == current_node["ref"]:
                             if field_id is None or field_id == _field_idx:
                                 node_idx = idx
@@ -226,13 +234,14 @@ class MiniWobReplayDataset(Dataset):
                 reward = 0.0
                 if j + 1 == len(states):
                     reward = replay_json["rawReward"]
-                frame = (data, node_idx, reward)
+                if j:
+                    frame = (last_data, node_idx, reward)
+                    torch.save(
+                        frame, osp.join(self.processed_dir, "data_{}.pt".format(p_idx))
+                    )
+                    p_idx += 1
                 last_dom_nx = dom_nx
                 last_data = data
-                torch.save(
-                    frame, osp.join(self.processed_dir, "data_{}.pt".format(p_idx))
-                )
-                p_idx += 1
 
     def get(self, idx):
         data = torch.load(osp.join(self.processed_dir, "data_{}.pt".format(idx)))
