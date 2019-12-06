@@ -150,7 +150,8 @@ class GNNBase(NNBase):
         _x[not_leaf_mask] = 0
 
         # critic actor split here
-        critic_at = self.critic_attention(_x, inputs.batch)
+        # critic_at = self.critic_attention(_x, inputs.batch)
+        critic_at = global_max_pool(_x, inputs.batch)
         inputs_at = self.inputs_attention(_x, inputs.batch)
         self.last_inputs_at = inputs_at
 

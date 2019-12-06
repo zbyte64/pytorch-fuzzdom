@@ -222,15 +222,16 @@ def main():
             ).detach()
 
         if args.gail:
-            if j >= 10:
-                envs.venv.eval()
+            # if j >= 10:
+            #    envs.venv.eval()
 
             gail_epoch = args.gail_epoch
             if j < 10:
                 gail_epoch = 100  # Warm up
             for _ in range(gail_epoch):
                 obsfilt = lambda x, update: x  # utils.get_vec_normalize(envs)._obfilt
-                discr.update(gail_train_loader, rollouts, obsfilt)
+                gl = discr.update(gail_train_loader, rollouts, obsfilt)
+            print("Gail loss:", gl)
 
             for step in range(args.num_steps):
                 rollouts.rewards[step] = discr.predict_reward(

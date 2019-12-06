@@ -135,7 +135,7 @@ class MiniWobReplayDataset(Dataset):
 
             frames = []
             current_string = ""
-            last_dom_nx = last_data = None
+            last_dom_nx = last_data = last_node = None
             for j, state in enumerate(states):
                 dom_json = state["dom"]
                 dom_nx = miniwob_to_graph(dom_json)
@@ -145,6 +145,7 @@ class MiniWobReplayDataset(Dataset):
                 action = state["action"]
                 current_node = None
                 field_id = None
+                node_idx = None
                 # skip unrecognized actions
                 if action and action["type"] not in ("click", "keypress"):
                     continue
@@ -172,6 +173,7 @@ class MiniWobReplayDataset(Dataset):
                                 field_id = i
                                 break
                         current_string = ""
+                        current_node = last_node
                     elif current_string:
                         # TODO identify field
                         print("Warning: uncaught transition from keypress")
@@ -203,11 +205,10 @@ class MiniWobReplayDataset(Dataset):
                         if value == t:
                             field_id = i
                             break
+                if current_node is not None:
+                    last_node = current_node
 
                 data = state_to_vector(graph_state)
-                node_idx = 0
-                if last_dom_nx:
-                    node_idx = random.randint(0, len(last_dom_nx))
                 if current_node and last_dom_nx:
                     last_nodes = list(last_dom_nx.nodes)
                     # field_values = list(fields.values)
@@ -234,7 +235,7 @@ class MiniWobReplayDataset(Dataset):
                 reward = 0.0
                 if j + 1 == len(states):
                     reward = replay_json["rawReward"]
-                if j:
+                if node_idx is not None:
                     frame = (last_data, node_idx, reward)
                     torch.save(
                         frame, osp.join(self.processed_dir, "data_{}.pt".format(p_idx))
