@@ -175,13 +175,19 @@ class ManagedWebInterface(WebInterface):
 
 async def send_keys(device, text:str, ref=None):
     if ref is not None:
-        return await device.execute_script(
-            f"core.previousDOMInfo['{ref}'].value = '{text}'"
-        )
-    if ref is not None:
-        await device.execute_script(
-            f"core.previousDOMInfo['{ref}'].click(); core.previousDOMInfo['{ref}'].focus()"
-        )
+        knows_ref = await device.execute_script(f"return core.previousDOMInfo[{ref}] != null")
+        if knows_ref:
+            await device.execute_script(
+                f"""
+                core.previousDOMInfo['{ref}'].click();
+                core.previousDOMInfo['{ref}'].focus();
+                core.previousDOMInfo['{ref}'].value = '{text}';
+                """
+            )
+            return
+        else:
+            pass
+            #print("previous dom info does not have ref:", ref, knows_ref)
     ticks = []
     keyboard = actions.Keyboard("keyboard")
     for key in text:
@@ -316,7 +322,15 @@ class MiniWoBGraphEnvironment(gym.Env):
         start_time = time.time()
         waitable = f(ref, value)
         if waitable is not None:
-            await waitable
+            try:
+                await waitable
+            except:
+                dom_g = await self.wob_dom()
+                if ref not in dom_g:
+                    print("Bad node?", ref, self.state.dom_graph.nodes[ref])
+                else:
+                    print("Node was found!", ref)
+                raise
         # wait for an amount of time but take into account future js execution time
         wait_time = max(self.wait_ms / 1000 - (time.time() - start_time) * 2, 0)
         if wait_time:
