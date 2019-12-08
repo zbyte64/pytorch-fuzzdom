@@ -8,9 +8,9 @@ from a2c_ppo_acktr.utils import init
 
 
 class GNNBase(NNBase):
-    def __init__(self, input_dim, dom_encoder=None, recurrent=False, hidden_size=64):
+    def __init__(self, input_dim, dom_encoder=None, recurrent=False, hidden_size=64, text_embed_size=25):
         super(GNNBase, self).__init__(recurrent, hidden_size, hidden_size)
-
+        self.hidden_size = hidden_size
         init_t = lambda m: init(
             m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0), 2 ** 0.5
         )
@@ -27,29 +27,22 @@ class GNNBase(NNBase):
         query_input_dim = 4 * 2 + 8 + 2 + 5 * 3 + 2
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
-        conv_size = hidden_size
+        self.attr_norm = nn.BatchNorm1d(text_embed_size)
 
-        self.attr_norm = nn.BatchNorm1d(25)
-
-        self.global_conv = SAGEConv(query_input_dim, conv_size - query_input_dim)
+        self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
 
         # TODO num-actions + 1
         self.action_embedding = nn.Sequential(nn.Embedding(5, 2), nn.Tanh())
-        self.field_key = nn.Sequential(init_t(nn.Linear(25, 5)), nn.Tanh())
-        self.dom_tag = nn.Sequential(init_t(nn.Linear(25, 5)), nn.Tanh())
-        self.dom_classes = nn.Sequential(init_t(nn.Linear(25, 5)), nn.Tanh())
-        self.inputs_att_gate = nn.Sequential(init_r(nn.Linear(conv_size, 1)), nn.ReLU())
-        self.inputs_attention = GlobalAttention(self.inputs_att_gate)
-        self.critic_att_gate = nn.Sequential(init_r(nn.Linear(conv_size, 1)), nn.ReLU())
-        self.critic_attention = GlobalAttention(self.inputs_att_gate)
-
-        """self.main = nn.Sequential(
-            init_r(nn.Linear(conv_size * 2, hidden_size)), nn.ReLU()
-            #nn.Linear(conv_size * 2, hidden_size, bias=False), nn.Tanh()
+        self.field_key = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
+        self.dom_tag = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
+        self.dom_classes = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
+        self.inputs_att_gate = nn.Sequential(
+            init_r(nn.Linear(hidden_size*2, hidden_size)),
+            nn.ReLU(),
+            init_r(nn.Linear(hidden_size, 1)),
+            nn.ReLU(),
         )
-        """
-        self.critic_bilinear = nn.Bilinear(conv_size, conv_size, hidden_size)
-
+        self.inputs_attention = GlobalAttention(self.inputs_att_gate)
         init_ = lambda m: init(
             m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0)
         )
@@ -132,15 +125,12 @@ class GNNBase(NNBase):
 
         _add_x = torch.tanh(self.global_conv(x, inputs.edge_index))
         _x = torch.cat([x, _add_x], dim=1)
-
+        # critic input is max pooled indicators, global attention
+        global_at = global_max_pool(_x, inputs.batch)
         if self.is_recurrent:
-            masks = masks[inputs.batch]
-            if rnn_hxs.shape[0] == 1:
-                rnn_hxs = torch.cat([rnn_hxs] * inputs.batch.shape[0])
-            else:
-                rnn_hxs = rnn_hxs[inputs.batch]
-            _x, rnn_hxs = self._forward_gru(_x, rnn_hxs, masks)
-            rnn_hxs = global_max_pool(rnn_hxs, inputs.batch)
+            global_at, rnn_hxs = self._forward_gru(global_at, rnn_hxs, masks)
+        # actor input is node actions with global input
+        _x = torch.cat([_x, global_at[inputs.batch]], dim=1)
 
         self.last_x = x
         self.last_query = query
@@ -149,13 +139,7 @@ class GNNBase(NNBase):
         not_leaf_mask = (inputs.order < 0).squeeze()
         _x[not_leaf_mask] = 0
 
-        # critic actor split here
-        # critic_at = self.critic_attention(_x, inputs.batch)
-        critic_at = global_max_pool(_x, inputs.batch)
-        inputs_at = self.inputs_attention(_x, inputs.batch)
-        self.last_inputs_at = inputs_at
-
-        x = torch.tanh(self.critic_bilinear(inputs_at, critic_at))
+        self.last_inputs_at = _x
 
         # emit node_id, and field_id attention
         inputs_votes = self.inputs_att_gate(_x) + 1e-15
@@ -167,7 +151,7 @@ class GNNBase(NNBase):
             _m = inputs.batch == i
             batch_votes.append(inputs_votes[_m])
 
-        return (self.critic_linear(x), batch_votes, rnn_hxs)
+        return (self.critic_linear(global_at), batch_votes, rnn_hxs)
 
 
 class Encoder(torch.nn.Module):

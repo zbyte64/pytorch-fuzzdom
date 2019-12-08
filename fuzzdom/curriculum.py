@@ -1,5 +1,6 @@
 import os
 from collections import defaultdict
+import random
 
 from .dir_paths import MINIWOB_HTML
 
@@ -26,6 +27,8 @@ class LevelTracker:
         if pass_or_fail:
             stats["pass"] += 1
             self.current_level_idx += 1
+            if self.current_level_idx == len(self.levels):
+                self.current_level_idx = random.randint(0, len(self.levels)-1)
         else:
             stats["fail"] += 1
             self.current_level_idx -= 1
