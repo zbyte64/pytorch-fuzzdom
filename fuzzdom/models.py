@@ -8,7 +8,14 @@ from a2c_ppo_acktr.utils import init
 
 
 class GNNBase(NNBase):
-    def __init__(self, input_dim, dom_encoder=None, recurrent=False, hidden_size=64, text_embed_size=25):
+    def __init__(
+        self,
+        input_dim,
+        dom_encoder=None,
+        recurrent=False,
+        hidden_size=64,
+        text_embed_size=25,
+    ):
         super(GNNBase, self).__init__(recurrent, hidden_size, hidden_size)
         self.hidden_size = hidden_size
         init_t = lambda m: init(
@@ -35,9 +42,11 @@ class GNNBase(NNBase):
         self.action_embedding = nn.Sequential(nn.Embedding(5, 2), nn.Tanh())
         self.field_key = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
         self.dom_tag = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
-        self.dom_classes = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
+        self.dom_classes = nn.Sequential(
+            init_t(nn.Linear(text_embed_size, 5)), nn.Tanh()
+        )
         self.inputs_att_gate = nn.Sequential(
-            init_r(nn.Linear(hidden_size*2, hidden_size)),
+            init_r(nn.Linear(hidden_size * 2, hidden_size)),
             nn.ReLU(),
             init_r(nn.Linear(hidden_size, 1)),
             nn.ReLU(),
@@ -125,31 +134,34 @@ class GNNBase(NNBase):
 
         _add_x = torch.tanh(self.global_conv(x, inputs.edge_index))
         _x = torch.cat([x, _add_x], dim=1)
+
+        # drop non-leaf nodes
+        leaf_mask = (inputs.order >= 0).squeeze()
+        _x = _x[leaf_mask]
+        _batch = inputs.batch[leaf_mask]
+
         # critic input is max pooled indicators, global attention
-        global_at = global_max_pool(_x, inputs.batch)
+        global_at = global_max_pool(_x, _batch)
         if self.is_recurrent:
             global_at, rnn_hxs = self._forward_gru(global_at, rnn_hxs, masks)
         # actor input is node actions with global input
-        _x = torch.cat([_x, global_at[inputs.batch]], dim=1)
+        _x = torch.cat([_x, global_at[_batch]], dim=1)
 
         self.last_x = x
         self.last_query = query
 
-        # zero out non-leaf nodes
-        not_leaf_mask = (inputs.order < 0).squeeze()
-        _x[not_leaf_mask] = 0
-
         self.last_inputs_at = _x
 
         # emit node_id, and field_id attention
-        inputs_votes = self.inputs_att_gate(_x) + 1e-15
-        inputs_votes[not_leaf_mask] = 0.0
+        inputs_votes = self.inputs_att_gate(_x)
 
         batch_votes = []
-        batch_size = inputs.batch.max().item() + 1
+        batch_size = _batch.max().item() + 1
+        all_votes = torch.zeros(x.shape[0])
+        all_votes.masked_scatter_(leaf_mask, inputs_votes)
         for i in range(batch_size):
             _m = inputs.batch == i
-            batch_votes.append(inputs_votes[_m])
+            batch_votes.append(all_votes[_m])
 
         return (self.critic_linear(global_at), batch_votes, rnn_hxs)
 
