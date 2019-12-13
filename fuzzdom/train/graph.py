@@ -142,7 +142,7 @@ def main():
             pass
 
         model_path = os.path.join(save_path, args.env_name + ".pt")
-        if os.path.exists(model_path):
+        if False and os.path.exists(model_path):
             print("Loadng previous model:", model_path)
             actor_critic = torch.load(model_path)
             actor_critic.train()
