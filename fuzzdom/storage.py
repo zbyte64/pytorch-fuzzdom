@@ -80,4 +80,4 @@ class ReceiptRolloutStorage(RolloutStorage):
             advantages, num_mini_batch
         ):
             obs, *rest = b
-            yield (self.receipts.redeeom(obs), *rest)
+            yield (self.receipts.redeem(obs), *rest)
