@@ -3,6 +3,7 @@ from torch_geometric.transforms import Distance
 import gym
 import numpy as np
 import networkx as nx
+from collections import defaultdict
 
 from .domx import short_embed
 from .state import MiniWoBGraphState
@@ -21,45 +22,19 @@ def tuplize(f):
     return thunk
 
 
-def state_to_vector(graph_state):
+def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
     encode_field_actions_onto_encoded_dom_graph(
         e_dom, e_fields, graph_state.fields, graph_state.utterance
     )
+    encode_prior_actions_onto_encoded_dom_graph(
+        e_dom, prior_actions, graph_state.fields
+    )
     # for node_id in e_dom.nodes:
     #    print(node_id, e_dom.nodes[node_id])
     e_dom = nx.convert_node_labels_to_integers(e_dom)
     d = from_networkx(e_dom)
-    return d
-
-
-def graphs_to_vector(dom_graph, fields):
-    # TODO each leaf node gets multiplied by fields and available actions
-    # non-leaf nodes are zeroed for fields and action
-    assert fields
-    assert dom_graph
-    e_dom = encode_dom_graph(dom_graph)
-    e_fields = encode_fields(fields)
-    m_graph = nx.cartesian_product(e_dom, e_fields)
-    m_graph = nx.convert_node_labels_to_integers(m_graph)
-    # convert tuples to single values
-    assert m_graph
-    for n in m_graph.nodes:
-        node = m_graph.nodes[n]
-        for key, attr in list(node.items()):
-            if isinstance(attr, tuple):
-                if attr[0] is not None:
-                    attr = attr[0]
-                else:
-                    attr = attr[1]
-                assert attr is not None, key
-            node[key] = attr
-    # for node_id in e_fields.nodes:
-    #    print(node_id, e_fields.nodes[node_id])
-    d = from_networkx(m_graph)
-    # d.pos = d.dom_idx, d.dom_idx
-    # d = Distance(cat=False)(d)
     return d
 
 
@@ -76,20 +51,42 @@ def encode_fields(fields):
     return o
 
 
+def encode_prior_actions_onto_encoded_dom_graph(
+    dom_graph: nx.DiGraph, prior_actions: dict, fields
+):
+    field_keys = list(fields.keys)
+    for dom_ref, revisions in prior_actions.items():
+        for i, (action_id, node, field_idx) in enumerate(revisions):
+            revision = len(revisions) - i
+            action = ["click", "paste_field", "copy", "paste"][action_id]
+            field_key = field_keys[field_idx]
+            k = f"{dom_ref}-{field_key}-{action}"
+            if k in dom_graph:
+                dom_graph.nodes[k]["tampered"] = (1,)
+                node["revision"] = (revision / len(revisions),)
+                node["depth"] = (-1.0,)
+                node["order"] = (-1.0,)
+                node["dom_idx"] = dom_graph.nodes[k]["dom_idx"]
+                l = f"{dom_ref}-{field_key}-{action}-{revision}"
+                dom_graph.add_node(l, **node)
+                dom_graph.add_edge(k, l)
+
+
 def encode_field_actions_onto_encoded_dom_graph(
     dom_graph: nx.DiGraph, fields_graph: nx.DiGraph, fields, utterance: str
 ):
-    non_leaf_info = {
+    default_leaf_info = {
         "action": short_embed(""),
         "key": short_embed("utterance"),
         "query": short_embed(utterance),
         "field_idx": (-1,),
         "order": (-1,),
         "action_idx": (-1,),
+        "revision": (0.0,),
     }
     for x in list(dom_graph.nodes):
         node = dom_graph.nodes[x]
-        node.update(non_leaf_info)
+        node.update(default_leaf_info)
         is_leaf = dom_graph.out_degree(x) == 0
         if is_leaf:
             parents = list(dom_graph.predecessors(x))
@@ -108,7 +105,7 @@ def encode_field_actions_onto_encoded_dom_graph(
                 action_idx = {"click": 0, "paste_field": 1, "copy": 2, "paste": 3}[
                     action
                 ]
-                k = f"{x}-{field_key}"
+                k = f"{x}-{field_key}-{action}"
                 field_node = dict(node)
                 field_node.update(field)
                 field_node["action"] = short_embed(action)
@@ -184,10 +181,11 @@ class ReceiptsGymWrapper(gym.ObservationWrapper):
         return idx
 
 
-class GraphGymWrapper(gym.ActionWrapper, gym.ObservationWrapper):
+class GraphGymWrapper(gym.Wrapper):
     """
     Convert graph state to tensor/Data
     """
+
     action_space = gym.spaces.Discrete(1)  # np.inf
     observation_space = gym.spaces.Discrete(np.inf)
 
@@ -202,23 +200,36 @@ class GraphGymWrapper(gym.ActionWrapper, gym.ObservationWrapper):
         field_idx = self.last_observation.field_idx[node_idx].item()
         dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]
         field_value = list(self.last_state.fields.values)[field_idx]
+        n = {
+            k: self.last_observation[k][node_idx]
+            for k in self.last_observation.keys
+            if not k.startswith("edge_")
+        }
+        self.prior_actions[dom_ref].append((action_id, n, field_idx))
         return (action_id, dom_ref, field_value)
 
-    def observation(self, obs:MiniWoBGraphState):
+    def observation(self, obs: MiniWoBGraphState):
         assert isinstance(obs, MiniWoBGraphState)
         self.last_state = obs
-        obs = state_to_vector(obs)
+        obs = state_to_vector(obs, self.prior_actions)
         self.last_observation = obs
         return obs
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(self.action(action))
+        return self.observation(observation), reward, done, info
+
+    def reset(self):
+        self.prior_actions = defaultdict(list)
+        obs = self.env.reset()
+        return self.observation(obs)
 
 
 def make_vec_envs(envs, receipts):
     from .asyncio_vector_env import AsyncioVectorEnv
 
     envs = [
-        ReceiptsGymWrapper(
-            GraphGymWrapper(env), receipt_factory=receipts
-        )
+        ReceiptsGymWrapper(GraphGymWrapper(env), receipt_factory=receipts)
         for env in envs
     ]
     vec_env = AsyncioVectorEnv(envs)

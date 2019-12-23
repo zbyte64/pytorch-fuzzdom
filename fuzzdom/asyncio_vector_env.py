@@ -5,6 +5,7 @@ import time
 import asyncio
 from queue import Queue, Empty
 import traceback
+from unittest.mock import patch
 
 from gym import logger
 from gym.vector.vector_env import VectorEnv
@@ -19,6 +20,28 @@ def resolve_env_fn(env, value, fn):
             return value
         value = getattr(env, fn)(value)
     return value
+
+
+async def call_wrapped_async_reset(env, *args):
+    root_env = env
+    while hasattr(root_env, "env"):
+        root_env = root_env.env
+    result = await root_env.async_reset(*args)
+    if env != root_env:
+        with patch.object(root_env, "reset", return_value=result) as mock_method:
+            result = env.reset(*args)
+    return result
+
+
+async def call_wrapped_async_step(env, action):
+    root_env = env
+    while hasattr(root_env, "env"):
+        root_env = root_env.env
+    action = resolve_env_fn(env, action, "action")
+    result = await root_env.async_step(action)
+    reward = resolve_env_fn(env, result[1], "reward")
+    obs = resolve_env_fn(env, result[0], "observation")
+    return (obs, reward, *result[2:])
 
 
 class AsyncioVectorEnv(VectorEnv):
@@ -84,12 +107,9 @@ class AsyncioVectorEnv(VectorEnv):
 
     async def async_reset(self):
         self._dones[:] = False
-        observations = await (asyncio.gather(*[env.async_reset() for env in self.envs]))
-
-        observations = [
-            resolve_env_fn(env, o, "observation")
-            for env, o in zip(self.envs, observations)
-        ]
+        observations = await (
+            asyncio.gather(*[call_wrapped_async_reset(env) for env in self.envs])
+        )
 
         try:
             concatenate(observations, self.observations, self.single_observation_space)
@@ -116,7 +136,7 @@ class AsyncioVectorEnv(VectorEnv):
                     asyncio.wait_for(env.async_step(action), timeout=1.0)
                     for env, action in zip(self.envs, self._actions)
                 ],
-                return_exceptions=True
+                return_exceptions=True,
             )
         )
         for i, result in enumerate(p):
@@ -161,7 +181,7 @@ class AsyncioVectorEnv(VectorEnv):
         self.loop.run_until_complete(
             asyncio.gather(
                 *[asyncio.wait_for(env.close(), 1.0) for env in self.envs],
-                return_exceptions=True
+                return_exceptions=True,
             )
         )
         self.closed = True
