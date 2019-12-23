@@ -56,14 +56,13 @@ def encode_prior_actions_onto_encoded_dom_graph(
 ):
     field_keys = list(fields.keys)
     for dom_ref, revisions in prior_actions.items():
-        for i, (action_id, node, field_idx) in enumerate(revisions):
-            revision = len(revisions) - i
+        for revision, (action_id, node, field_idx) in enumerate(revisions):
             action = ["click", "paste_field", "copy", "paste"][action_id]
             field_key = field_keys[field_idx]
             k = f"{dom_ref}-{field_key}-{action}"
             if k in dom_graph:
                 dom_graph.nodes[k]["tampered"] = (1,)
-                node["revision"] = (revision / len(revisions),)
+                node["revision"] = ((revision + 1) / len(revisions),)
                 node["depth"] = (-1.0,)
                 node["order"] = (-1.0,)
                 node["dom_idx"] = dom_graph.nodes[k]["dom_idx"]
@@ -82,7 +81,7 @@ def encode_field_actions_onto_encoded_dom_graph(
         "field_idx": (-1,),
         "order": (-1,),
         "action_idx": (-1,),
-        "revision": (0.0,),
+        "revision": (-1.0,),
     }
     for x in list(dom_graph.nodes):
         node = dom_graph.nodes[x]
