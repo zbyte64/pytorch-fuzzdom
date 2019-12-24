@@ -30,12 +30,13 @@ class GNNBase(NNBase):
 
         self.dom_encoder = dom_encoder
 
-        # attr cosine distances + visual bytes + graph position + attr embeds + action embedding
-        query_input_dim = 4 * 2 + 8 + 2 + 5 * 3 + 2
+        # attr cosine distances + visual bytes + graph position + attr embeds + action embedding + revision
+        query_input_dim = 4 * 2 + 8 + 2 + 5 * 3 + 2 + 1
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
 
+        assert hidden_size > query_input_dim
         self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
 
         # TODO num-actions + 1
@@ -104,6 +105,7 @@ class GNNBase(NNBase):
                 inputs.depth,
                 inputs.order,
                 inputs.tampered,
+                inputs.revision,
                 self.action_embedding(inputs.action_idx + 1).squeeze(1),
             ],
             dim=1,

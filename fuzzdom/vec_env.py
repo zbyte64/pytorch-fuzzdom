@@ -63,9 +63,9 @@ def encode_prior_actions_onto_encoded_dom_graph(
             if k in dom_graph:
                 dom_graph.nodes[k]["tampered"] = (1,)
                 node["revision"] = ((revision + 1) / len(revisions),)
-                node["depth"] = (-1.0,)
+                #node["depth"] = (-1.0,)
                 node["order"] = (-1.0,)
-                node["dom_idx"] = dom_graph.nodes[k]["dom_idx"]
+                #node["dom_idx"] = dom_graph.nodes[k]["dom_idx"]
                 l = f"{dom_ref}-{field_key}-{action}-{revision}"
                 dom_graph.add_node(l, **node)
                 dom_graph.add_edge(k, l)
@@ -216,7 +216,13 @@ class GraphGymWrapper(gym.Wrapper):
 
     def step(self, action):
         observation, reward, done, info = self.env.step(self.action(action))
+        self.step_result((observation, reward, done, info))
         return self.observation(observation), reward, done, info
+
+    def step_result(self, result):
+        observation, reward, done, info = result
+        if done or info.get("task_done"):
+            self.prior_actions = defaultdict(list)
 
     def reset(self):
         self.prior_actions = defaultdict(list)

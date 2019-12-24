@@ -39,6 +39,7 @@ async def call_wrapped_async_step(env, action):
         root_env = root_env.env
     action = resolve_env_fn(env, action, "action")
     result = await root_env.async_step(action)
+    _ = resolve_env_fn(env, result, "step_result")
     reward = resolve_env_fn(env, result[1], "reward")
     obs = resolve_env_fn(env, result[0], "observation")
     return (obs, reward, *result[2:])
@@ -126,15 +127,12 @@ class AsyncioVectorEnv(VectorEnv):
         return self.loop.run_until_complete(self.async_step(self._original_actions))
 
     async def async_step(self, actions):
-        self._actions = [
-            resolve_env_fn(env, a, "action") for env, a in zip(self.envs, actions)
-        ]
         observations, infos = [], []
         p = await (
             asyncio.gather(
                 *[
-                    asyncio.wait_for(env.async_step(action), timeout=1.0)
-                    for env, action in zip(self.envs, self._actions)
+                    asyncio.wait_for(call_wrapped_async_step(env, action), timeout=1.0)
+                    for env, action in zip(self.envs, actions)
                 ],
                 return_exceptions=True,
             )
@@ -145,23 +143,20 @@ class AsyncioVectorEnv(VectorEnv):
                 print("Error:", type(result), result, self.envs[i].task)
                 # traceback.print_exception(result)
                 observation, self._rewards[i], self._dones[i], info = [
-                    env.async_reset(),
+                    call_wrapped_async_reset(env),
                     0.0,
                     False,
                     {"bad_transition": True},
                 ]
             else:
                 observation, self._rewards[i], self._dones[i], info = result
-                observation = resolve_env_fn(env, observation, "observation")
             observations.append(observation)
             infos.append(info)
         p = await (asyncio.gather(*[o for o in observations if asyncio.iscoroutine(o)]))
         j = 0
         for i, o in enumerate(observations):
             if asyncio.iscoroutine(o):
-                env = self.envs[i]
-                observation = resolve_env_fn(env, p[j], "observation")
-                observations[i] = observation
+                observations[i] = p[j]
                 j += 1
 
         concatenate(observations, self.observations, self.single_observation_space)
