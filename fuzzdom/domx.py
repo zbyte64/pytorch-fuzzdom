@@ -7,7 +7,7 @@ import random
 
 from .dir_paths import CACHE_DIR
 
-bpemb_en = BPEmb(lang="en", dim=25, cache_dir=CACHE_DIR + "/bpemb")
+bpemb_en = BPEmb(lang="en", dim=25)
 
 
 def embed(x):

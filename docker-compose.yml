@@ -9,7 +9,8 @@ services:
       - selenium
     volumes:
       - ./fuzzdom:/code/fuzzdom
-      - ./tmp:/tmp
+      - miniwob-volume:/tmp
+      - miniwob-volume:/root/.cache
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models
       - miniwob-volume:/opt/conda/lib/python3.6/site-packages/miniwob
