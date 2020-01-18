@@ -31,12 +31,12 @@ class GNNBase(NNBase):
         self.dom_encoder = dom_encoder
 
         # attr cosine distances + visual bytes + graph position + attr embeds + action embedding + revision
-        query_input_dim = 4 * 2 + 8 + 2 + 5 * 3 + 2 + 1
+        query_input_dim = 4 * 2 + 6 + 2 + 5 * 3 + 2 + 1
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
 
-        assert hidden_size > query_input_dim
+        assert hidden_size > query_input_dim + 16
         self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
 
         # TODO num-actions + 1
@@ -97,10 +97,8 @@ class GNNBase(NNBase):
                 self.dom_classes(self.attr_norm(inputs.classes)),
                 inputs.rx,
                 inputs.ry,
-                inputs.width,
-                inputs.height,
-                inputs.top,
-                inputs.left,
+                inputs.width * inputs.height,
+                inputs.top * inputs.left,
                 inputs.focused,
                 inputs.depth,
                 inputs.order,
@@ -141,7 +139,8 @@ class GNNBase(NNBase):
         _x = torch.cat([x, _add_x], dim=1)
 
         # drop non-leaf nodes
-        leaf_mask = (inputs.order >= 0).squeeze()
+        leaf_mask = (inputs.actionable == 1).squeeze()
+        #assert leaf_mask.sum().item()
         _x = _x[leaf_mask]
         _batch = inputs.batch[leaf_mask]
 

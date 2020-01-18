@@ -61,11 +61,9 @@ def encode_prior_actions_onto_encoded_dom_graph(
             field_key = field_keys[field_idx]
             k = f"{dom_ref}-{field_key}-{action}"
             if k in dom_graph:
-                dom_graph.nodes[k]["tampered"] = (1,)
+                dom_graph.nodes[k]["tampered"] = (1.0,)
                 node["revision"] = ((revision + 1) / len(revisions),)
-                #node["depth"] = (-1.0,)
-                node["order"] = (-1.0,)
-                #node["dom_idx"] = dom_graph.nodes[k]["dom_idx"]
+                node["actionable"] = (0,)
                 l = f"{dom_ref}-{field_key}-{action}-{revision}"
                 dom_graph.add_node(l, **node)
                 dom_graph.add_edge(k, l)
@@ -79,9 +77,10 @@ def encode_field_actions_onto_encoded_dom_graph(
         "key": short_embed("utterance"),
         "query": short_embed(utterance),
         "field_idx": (-1,),
-        "order": (-1,),
+        "order": (-1.0,),
         "action_idx": (-1,),
         "revision": (-1.0,),
+        "actionable": (0,),
     }
     for x in list(dom_graph.nodes):
         node = dom_graph.nodes[x]
@@ -109,6 +108,7 @@ def encode_field_actions_onto_encoded_dom_graph(
                 field_node.update(field)
                 field_node["action"] = short_embed(action)
                 field_node["action_idx"] = (action_idx,)
+                field_node["actionable"] = (1,)
                 dom_graph.add_node(k, **field_node)
                 if parent is not None:
                     dom_graph.add_edge(parent, k)
@@ -119,6 +119,7 @@ def encode_field_actions_onto_encoded_dom_graph(
                     field_node.update(field)
                     field_node["action"] = short_embed(action)
                     field_node["action_idx"] = (0,)
+                    field_node["actionable"] = (1,)
                     dom_graph.add_node(k, **field_node)
                     if parent is not None:
                         dom_graph.add_edge(parent, k)
