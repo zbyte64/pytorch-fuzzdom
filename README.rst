@@ -28,6 +28,7 @@ Features
 * Does not implement/imports RL Agent
 * OpenAI gym compatible environment and wrappers (adds graph action space support)
 * asyncio interface with arsenic
+* Prior actions are represented as part of the graph state
 
 TODO: GAIL Dataset
 
