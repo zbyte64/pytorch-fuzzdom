@@ -1,0 +1,2 @@
+recursive-include fuzzdom/js *.js
+recursive-include fuzzdom/pretrained *.pt

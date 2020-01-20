@@ -5,7 +5,6 @@ import numpy as np
 from PIL import Image
 import random
 
-from .dir_paths import CACHE_DIR
 
 bpemb_en = BPEmb(lang="en", dim=25)
 

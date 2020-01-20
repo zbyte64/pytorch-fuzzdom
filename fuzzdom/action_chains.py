@@ -1,10 +1,12 @@
 import asyncio
 import torch
+import os
 from collections import OrderedDict, Counter
 
 from .env import CustomTaskEnvironment
 from .vec_env import make_vec_envs
 from .storage import StorageReceipt
+from .dir_paths import PRETRAINED_PATH
 
 
 class FuzzyActionChains(object):
@@ -19,7 +21,7 @@ class FuzzyActionChains(object):
     def __init__(self, driver, utterance: str, agent=None, stop_condition=None):
         self.driver = driver
         if agent is None:
-            agent = torch.load("./datadir/actor_critic.pt")
+            agent = torch.load(os.path.join(PRETRAINED_PATH, "agent.pt"))
         self.agent = agent
         self.receipts = StorageReceipt()
         self.agent.receipts = self.receipts
