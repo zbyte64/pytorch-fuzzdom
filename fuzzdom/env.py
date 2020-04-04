@@ -173,9 +173,11 @@ class ManagedWebInterface(WebInterface):
             self._driver = None
 
 
-async def send_keys(device, text:str, ref=None):
+async def send_keys(device, text: str, ref=None):
     if ref is not None:
-        knows_ref = await device.execute_script(f"return core.previousDOMInfo[{ref}] != null")
+        knows_ref = await device.execute_script(
+            f"return core.previousDOMInfo[{ref}] != null"
+        )
         if knows_ref:
             await device.execute_script(
                 f"""
@@ -187,7 +189,7 @@ async def send_keys(device, text:str, ref=None):
             return
         else:
             pass
-            #print("previous dom info does not have ref:", ref, knows_ref)
+            # print("previous dom info does not have ref:", ref, knows_ref)
     ticks = []
     keyboard = actions.Keyboard("keyboard")
     for key in text:
@@ -226,22 +228,12 @@ class MiniWoBGraphEnvironment(gym.Env):
         self._actions = [
             lambda ref, value: (
                 ref
-                and self.driver.execute_script(
-                    f"return core.elementClick({ref});"
-                )
+                and self.driver.execute_script(f"return core.elementClick({ref});")
                 or None
             ),
-            lambda ref, value: send_keys(
-                self.driver,
-                value,
-                ref,
-            ),
+            lambda ref, value: send_keys(self.driver, value, ref),
             lambda ref, value: self.set_state(self.state.copy_node_text(ref)),
-            lambda ref, value: send_keys(
-                self.driver,
-                self.state.clipboard_text,
-                ref,
-            ),
+            lambda ref, value: send_keys(self.driver, self.state.clipboard_text, ref),
             lambda ref, value: asyncio.sleep(0.5),
         ]
         self._action_meanings = [
@@ -259,7 +251,7 @@ class MiniWoBGraphEnvironment(gym.Env):
     def driver(self):
         return self._web._driver
 
-    async def run_script(self, s:str):
+    async def run_script(self, s: str):
         return await self.driver.execute_script(s)
 
     async def wob_dom(self) -> nx.DiGraph:
@@ -273,7 +265,7 @@ class MiniWoBGraphEnvironment(gym.Env):
 
     async def _injection_check(self):
         location = await self._web.location
-        assert location['protocol'] != 'chrome-error:'
+        assert location["protocol"] != "chrome-error:"
 
     async def refresh_state(self):
         # updates with new state with refetched dom and image
@@ -372,7 +364,7 @@ class MiniWoBGraphEnvironment(gym.Env):
     async def force_stop(self):
         await self.run_script("return core.endEpisode(0);")
 
-    async def begin_task(self, seed: float=None):
+    async def begin_task(self, seed: float = None):
         entry_url = self.level_tracker.get_level()
         self.task = entry_url.split("/")[-1].rsplit(".", 2)[0]
         url = self._base_url + entry_url
@@ -422,6 +414,7 @@ class MiniWoBGraphEnvironment(gym.Env):
 class CustomTaskEnvironment(MiniWoBGraphEnvironment):
     """
     Modified Graph Environment for executing custom commands
+    Injects DOM serialization javascript into browser session
 
     env = CustomTaskEnvironment(driver)
     env.set_task("Click on the Movies tab", [("click", "Movies")])
@@ -436,7 +429,7 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
             level_tracker=None,
             web_interface=web_interface,
         )
-        self.task = 'custom task'
+        self.task = "custom task"
 
     def set_task(self, task_fields: dict, utterance: str):
         self.fields = Fields(task_fields)

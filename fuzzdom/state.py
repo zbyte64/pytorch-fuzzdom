@@ -24,13 +24,10 @@ class MiniWoBGraphState(object):
     """
 
     def __init__(
-        self,
-        utterance: str,
-        fields: Fields,
-        dom_graph: nx.DiGraph,
-        screenshot: Image,
+        self, utterance: str, fields: Fields, dom_graph: nx.DiGraph, screenshot: Image
     ):
         assert isinstance(dom_graph, nx.DiGraph)
+        assert len(dom_graph)
         self.utterance = utterance
         self.fields = fields
         self.dom_graph = dom_graph

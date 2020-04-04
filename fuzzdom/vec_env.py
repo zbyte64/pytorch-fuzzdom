@@ -127,6 +127,7 @@ def encode_field_actions_onto_encoded_dom_graph(
 
 
 def encode_dom_graph(g: nx.DiGraph, encode_with=None):
+    assert len(g)
     numeric_map = {}
     o = nx.DiGraph()
     if encode_with is None:

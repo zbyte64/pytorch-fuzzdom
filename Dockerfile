@@ -1,5 +1,4 @@
 FROM pytorch/pytorch:1.4-cuda10.1-cudnn7-runtime
-# FROM python:3.6
 
 RUN conda install -c conda-forge opencv
 RUN conda install -c conda-forge tensorflow mpi4py gensim pandas joblib scikit-learn

@@ -1,4 +1,4 @@
-version: '3'
+version: "3"
 services:
   app:
     build: .
@@ -7,18 +7,28 @@ services:
       SELENIUM_URL: http://selenium:4444/wd/hub
     links:
       - selenium
+      - testsite
     volumes:
       - ./fuzzdom:/code/fuzzdom
       - miniwob-volume:/tmp
       - miniwob-volume:/root/.cache
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models
-      - miniwob-volume:/opt/conda/lib/python3.6/site-packages/miniwob
+      - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob
   selenium:
     image: selenium/standalone-chrome
+    links:
+      - testsite
     volumes:
-      - miniwob-volume:/opt/conda/lib/python3.6/site-packages/miniwob:ro
+      - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob:ro
+      - ./fuzzdom:/code/fuzzom
     ports:
       - 4444:4444
+  testsite:
+    image: nginx
+    volumes:
+      - ./fuzzdom/testsite:/usr/share/nginx/html
+    ports:
+      - 8080:80
 volumes:
   miniwob-volume:

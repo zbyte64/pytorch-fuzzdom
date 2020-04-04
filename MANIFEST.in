@@ -1,2 +1,3 @@
 recursive-include fuzzdom/js *.js
 recursive-include fuzzdom/pretrained *.pt
+recursive-include fuzzdom/testsite *.html *.css *.js
