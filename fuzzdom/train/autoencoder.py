@@ -4,6 +4,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GAE, VGAE
+from torch_geometric.utils import train_test_split_edges
 
 from fuzzdom.datasets import DomDataset
 from fuzzdom.dir_paths import DATA_DIR
@@ -51,7 +52,7 @@ def test(x, train_pos_edge_index, pos_edge_index, neg_edge_index):
 for epoch in range(1, 51):
     for data in dataloader:
         data.train_mask = data.val_mask = data.test_mask = data.y = None
-        data = model.split_edges(data)
+        data = train_test_split_edges(data)
         x, train_pos_edge_index = data.x.to(dev), data.train_pos_edge_index.to(dev)
         train(x, train_pos_edge_index)
         # print("pos", train_pos_edge_index)
