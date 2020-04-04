@@ -10,7 +10,7 @@ from torch_geometric.utils import from_networkx
 
 from .domx import json_to_graph, miniwob_to_graph
 from .vec_env import encode_dom_graph, encode_fields
-from .env import WebInterface
+from .env import WebInterface, open_driver
 from .state import MiniWoBGraphState, fields_factory
 
 
@@ -31,8 +31,14 @@ class DomDataset(Dataset):
         return len(self.processed_file_names)
 
     def download(self):
-        self.web_interface = WebInterface()
-        driver = self.web_interface._driver
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.async_download())
+
+    async def async_download(self):
+        driver = await open_driver()
+        self.web_interface = WebInterface(driver=driver)
         for url in self.urls:
             print(url)
             i = hash(url)
@@ -41,15 +47,15 @@ class DomDataset(Dataset):
                 continue
             if url.startswith("file:/"):
                 assert os.path.exists(url[7:]), url[7:]
-            driver.get(url)
-            self.web_interface.wait_for_dom()
-            self.web_interface._injection_check()
+            await driver.get(url)
+            await self.web_interface.wait_for_dom()
+            await self.web_interface._injection_check()
             # print(self.web_interface.location)
-            dom_struct = self.web_interface.visible_dom
+            dom_struct = await self.web_interface.visible_dom
             # print(driver.get_log("browser"))
             # print(driver.get_log("driver"))
-            assert driver.page_source
-            assert self.web_interface.html, str(driver.page_source)
+            assert driver.get_page_source
+            # assert self.web_interface.html, "No HTML"
 
             try:
                 data = json.dumps(dom_struct)
@@ -309,7 +315,7 @@ if __name__ == "__main__":
             l = links.find(limit=100, href=re.compile("//" + u), duplicates=False)
             _c = lambda x: x if x.startswith("http") else "https:" + x
             paths.extend([_c(e["href"]) for e in l])
-    d = DomDataset(DATA_DIR+"/dom-dataset", paths)
+    d = DomDataset(DATA_DIR + "/dom-dataset", paths)
     if download:
         d.download()
     d.process()
