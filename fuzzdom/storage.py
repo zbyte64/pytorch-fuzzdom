@@ -1,7 +1,9 @@
 import torch
 import numpy as np
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import Data
 from a2c_ppo_acktr.storage import RolloutStorage
+
+from .data import TupleBatch
 
 
 class StorageReceipt:
@@ -24,7 +26,8 @@ class StorageReceipt:
         return self._wrap_results(results)
 
     def issue_receipt(self, state):
-        assert isinstance(state, Data), str((type(state), state))
+        assert isinstance(state, tuple)
+        assert all(map(lambda x: isinstance(x, Data), state))
         receipt = self._counter
         self._counter += 1
         self._data[receipt] = state
@@ -37,7 +40,7 @@ class StorageReceipt:
         return self._wrap_results(results)
 
     def _wrap_results(self, results):
-        return Batch.from_data_list(results)
+        return TupleBatch.from_data_list(results)
 
     def prune(self, active_receipts):
         keep = set(active_receipts.view(-1).tolist())

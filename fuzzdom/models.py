@@ -1,6 +1,13 @@
 import torch
 from torch import nn
-from torch_geometric.nn import SAGEConv, global_max_pool, global_add_pool, GlobalAttention, GCNConv, global_mean_pool
+from torch_geometric.nn import (
+    SAGEConv,
+    global_max_pool,
+    global_add_pool,
+    GlobalAttention,
+    GCNConv,
+    global_mean_pool,
+)
 import torch.nn.functional as F
 
 from a2c_ppo_acktr.model import NNBase
@@ -47,27 +54,28 @@ class GNNBase(NNBase):
             init_t(nn.Linear(text_embed_size, 5)), nn.Tanh()
         )
         self.actor_gate = nn.Sequential(
-            init_r(nn.Linear(hidden_size*3, hidden_size)),
+            init_r(nn.Linear(hidden_size * 3, hidden_size)),
             nn.ReLU(),
             init_r(nn.Linear(hidden_size, 1)),
             nn.ReLU(),
         )
         self.critic_add_gate = nn.Sequential(
-            init_t(nn.Linear(hidden_size*2, hidden_size)),
-            nn.Tanh(),
+            init_t(nn.Linear(hidden_size * 2, hidden_size)), nn.Tanh()
         )
 
         init_ = lambda m: init(
             m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0)
         )
-        self.critic_linear = init_(nn.Linear(hidden_size*2, 1))
+        self.critic_linear = init_(nn.Linear(hidden_size * 2, 1))
 
         self.train()
 
     def forward(self, inputs, rnn_hxs, masks):
         from torch_geometric.data import Batch, Data
 
-        assert isinstance(inputs, Batch), str(type(inputs))
+        assert isinstance(inputs, tuple), str(type(inputs))
+        assert all(map(lambda x: isinstance(x, Batch), inputs))
+        dom, objectives, actions, history = inputs
 
         query_dom_attr = lambda attr: torch.cat(
             [
@@ -140,7 +148,7 @@ class GNNBase(NNBase):
 
         # drop non-leaf nodes
         leaf_mask = (inputs.actionable == 1).squeeze()
-        #assert leaf_mask.sum().item()
+        # assert leaf_mask.sum().item()
         _x = _x[leaf_mask]
         _batch = inputs.batch[leaf_mask]
 
@@ -172,7 +180,6 @@ class GNNBase(NNBase):
         for i in range(batch_size):
             _m = inputs.batch == i
             batch_votes.append(all_votes[_m])
-
 
         return (self.critic_linear(critic_x), batch_votes, rnn_hxs)
 

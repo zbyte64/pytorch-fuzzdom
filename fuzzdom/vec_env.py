@@ -25,17 +25,27 @@ def tuplize(f):
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
-    encode_field_actions_onto_encoded_dom_graph(
-        e_dom, e_fields, graph_state.fields, graph_state.utterance
+    e_actions = encode_dom_actionables(e_dom)
+    e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
+    e_dom, e_fields, e_actions, e_history = map(
+        nx.convert_node_labels_to_integers, [e_dom, e_fields, e_actions, e_history]
     )
-    encode_prior_actions_onto_encoded_dom_graph(
-        e_dom, prior_actions, graph_state.fields
+    dom_data, fields_data, actions_data, history_data = map(
+        from_networkx, [e_dom, e_fields, e_actions, e_history]
     )
-    # for node_id in e_dom.nodes:
-    #    print(node_id, e_dom.nodes[node_id])
-    e_dom = nx.convert_node_labels_to_integers(e_dom)
-    d = from_networkx(e_dom)
-    return d
+    import torch
+
+    dom_data.edge_index, fields_data.edge_index, actions_data.edge_index, history_data.edge_index = map(
+        lambda x: x.type(torch.LongTensor),
+        [
+            dom_data.edge_index,
+            fields_data.edge_index,
+            actions_data.edge_index,
+            history_data.edge_index,
+        ],
+    )
+
+    return (dom_data, fields_data, actions_data, history_data)
 
 
 def encode_fields(fields):
@@ -45,85 +55,56 @@ def encode_fields(fields):
         ke = short_embed(key)
         ve = short_embed(value)
         order = (i + 1) / n
+        # TODO action_idx & action ?
         o.add_node(i, key=ke, query=ve, field_idx=(i,), order=(order,))
         if i:
             o.add_edge(i - 1, i)
     return o
 
 
-def encode_prior_actions_onto_encoded_dom_graph(
-    dom_graph: nx.DiGraph, prior_actions: dict, fields
-):
+def encode_prior_actions(dom_graph: nx.DiGraph, prior_actions: dict, fields):
+    history = nx.DiGraph()
     field_keys = list(fields.keys)
     for dom_ref, revisions in prior_actions.items():
-        for revision, (action_id, node, field_idx) in enumerate(revisions):
-            action = ["click", "paste_field", "copy", "paste"][action_id]
+        for revision, (action_idx, node, field_idx) in enumerate(revisions):
+            action = ["click", "paste_field", "copy", "paste"][action_idx]
             field_key = field_keys[field_idx]
             k = f"{dom_ref}-{field_key}-{action}"
             if k in dom_graph:
-                dom_graph.nodes[k]["tampered"] = (1.0,)
-                node["revision"] = ((revision + 1) / len(revisions),)
-                node["actionable"] = (0,)
                 l = f"{dom_ref}-{field_key}-{action}-{revision}"
-                dom_graph.add_node(l, **node)
-                dom_graph.add_edge(k, l)
+                history.add_node(
+                    l,
+                    dom_idx=dom_ref,
+                    field_idx=field_idx,
+                    action_idx=action_id,
+                    revision=revision,
+                    action=action,
+                )
+    return history
 
 
-def encode_field_actions_onto_encoded_dom_graph(
-    dom_graph: nx.DiGraph, fields_graph: nx.DiGraph, fields, utterance: str
-):
-    default_leaf_info = {
-        "action": short_embed(""),
-        "key": short_embed("utterance"),
-        "query": short_embed(utterance),
-        "field_idx": (-1,),
-        "order": (-1.0,),
-        "action_idx": (-1,),
-        "revision": (-1.0,),
-        "actionable": (0,),
-    }
-    for x in list(dom_graph.nodes):
-        node = dom_graph.nodes[x]
-        node.update(default_leaf_info)
-        is_leaf = dom_graph.out_degree(x) == 0
-        if is_leaf:
-            parents = list(dom_graph.predecessors(x))
-            parent = parents[-1] if parents else None
-            for y, field_key in enumerate(fields.keys):
-                field = fields_graph.nodes[y]
-                field_key = field_key.split()[0]
-                action = {
-                    "click": "click",
-                    "select": "click",
-                    "submit": "click",
-                    "target": "click",
-                    "copy": "copy",
-                    "paste": "paste",
-                }.get(field_key, "paste_field")
-                action_idx = {"click": 0, "paste_field": 1, "copy": 2, "paste": 3}[
-                    action
-                ]
-                k = f"{x}-{field_key}-{action}"
-                field_node = dict(node)
-                field_node.update(field)
-                field_node["action"] = short_embed(action)
-                field_node["action_idx"] = (action_idx,)
-                field_node["actionable"] = (1,)
-                dom_graph.add_node(k, **field_node)
-                if parent is not None:
-                    dom_graph.add_edge(parent, k)
-                if action != "click":
-                    action = "click"
-                    k = f"{x}-{field_key}-{action}"
-                    field_node = dict(node)
-                    field_node.update(field)
-                    field_node["action"] = short_embed(action)
-                    field_node["action_idx"] = (0,)
-                    field_node["actionable"] = (1,)
-                    dom_graph.add_node(k, **field_node)
-                    if parent is not None:
-                        dom_graph.add_edge(parent, k)
-            dom_graph.remove_node(x)
+def encode_dom_actionables(dom_graph: nx.DiGraph):
+    """
+    For each leaf node we create a new graph with distances relative to the leaf
+    and the values are replaced with a mask
+    """
+    potential_actions = nx.DiGraph()
+    leaves = filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes)
+    for i, k in enumerate(leaves):
+        for u in list(dom_graph.nodes):
+            node = dom_graph.nodes[u]
+            node = {
+                "mask": 1 if u == k else 0,
+                "dom_idx": node["dom_idx"],
+                "origin_length": 0,
+                "action_lenth": 0,  # nx.shortest_path_length(dom_graph, k, u),
+            }
+            l = f"{i}-{u}"
+            potential_actions.add_node(l, **node)
+            for (_u, v) in filter(lambda y: y[0] == u, dom_graph.edges(u)):
+                m = f"{i}-{v}"
+                potential_actions.add_edge(l, m)
+    return potential_actions
 
 
 def encode_dom_graph(g: nx.DiGraph, encode_with=None):
@@ -149,7 +130,6 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
             "top": tuplize(lambda x: minmax_scale(x, 0, max_y)),
             "left": tuplize(lambda x: minmax_scale(x, 0, max_x)),
             "focused": tuplize(lambda x: 1.0 if x else 0.0),
-            "tampered": tuplize(lambda x: 1.0 if x else 0.0),
         }
     d = nx.shortest_path_length(g, list(g.nodes)[0])
     max_depth = max(d.values()) + 1
