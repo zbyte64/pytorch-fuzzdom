@@ -168,7 +168,7 @@ class AsyncioVectorEnv(VectorEnv):
             infos,
         )
 
-    def close(self):
+    def close(self, terminate=False):
         if self.closed:
             return
         if self.viewer is not None:
