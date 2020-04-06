@@ -37,14 +37,16 @@ class GNNBase(NNBase):
 
         self.dom_encoder = dom_encoder
 
-        # attr cosine distances + visual bytes + graph position + attr embeds + action embedding + revision
-        query_input_dim = 4 * 2 + 6 + 2 + 5 * 3 + 2 + 1
+        query_input_dim = 6 + 2 * 5
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
 
         assert hidden_size > query_input_dim + 16
         self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
+
+        self.dom_att_conv = SAGEConv(hidden_size + 3, 1)
+        self.objective_att_query = init_t(nn.Linear(text_embed_size * 2, hidden_size))
 
         # TODO num-actions + 1
         self.action_embedding = nn.Sequential(nn.Embedding(5, 2), nn.Tanh())
@@ -53,12 +55,7 @@ class GNNBase(NNBase):
         self.dom_classes = nn.Sequential(
             init_t(nn.Linear(text_embed_size, 5)), nn.Tanh()
         )
-        self.actor_gate = nn.Sequential(
-            init_r(nn.Linear(hidden_size * 3, hidden_size)),
-            nn.ReLU(),
-            init_r(nn.Linear(hidden_size, 1)),
-            nn.ReLU(),
-        )
+        self.actor_gate = nn.Sequential(init_r(nn.Linear(hidden_size, 1)), nn.ReLU())
         self.critic_add_gate = nn.Sequential(
             init_t(nn.Linear(hidden_size * 2, hidden_size)), nn.Tanh()
         )
@@ -75,112 +72,105 @@ class GNNBase(NNBase):
 
         assert isinstance(inputs, tuple), str(type(inputs))
         assert all(map(lambda x: isinstance(x, Batch), inputs))
-        dom, objectives, actions, history = inputs
-
-        query_dom_attr = lambda attr: torch.cat(
-            [
-                F.cosine_similarity(inputs.key, inputs[attr]).unsqueeze(1),
-                F.cosine_similarity(inputs.query, inputs[attr]).unsqueeze(1),
-                # F.pairwise_distance(inputs.key, inputs[attr]).unsqueeze(1),
-                # F.pairwise_distance(inputs.query, inputs[attr]).unsqueeze(1),
-            ],
-            dim=1,
-        )
-
-        query = torch.cat(
-            [
-                query_dom_attr("text"),
-                query_dom_attr("value"),
-                query_dom_attr("tag"),
-                query_dom_attr("classes"),
-            ],
-            dim=1,
-        )
+        dom, objectives, leaves, actions, history = inputs
+        # actions.original_batch
+        assert actions.edge_index is not None, str(inputs)
 
         x = torch.cat(
             [
-                query,
-                self.field_key(self.attr_norm(inputs.key)),
-                self.dom_tag(self.attr_norm(inputs.tag)),
-                self.dom_classes(self.attr_norm(inputs.classes)),
-                inputs.rx,
-                inputs.ry,
-                inputs.width * inputs.height,
-                inputs.top * inputs.left,
-                inputs.focused,
-                inputs.depth,
-                inputs.order,
-                inputs.tampered,
-                inputs.revision,
-                self.action_embedding(inputs.action_idx + 1).squeeze(1),
+                self.dom_tag(self.attr_norm(dom.tag)),
+                self.dom_classes(self.attr_norm(dom.classes)),
+                dom.rx,
+                dom.ry,
+                dom.width * dom.height,
+                dom.top * dom.left,
+                dom.focused,
+                dom.depth,
             ],
             dim=1,
         ).clamp(-1, 1)
 
         if self.dom_encoder:
-            # CONSIDER: this should be done before taking the cartesian product
             _add_x = torch.tanh(
                 self.dom_encoder(
                     torch.cat(
                         [
-                            inputs.text,
-                            inputs.value,
-                            inputs.tag,
-                            inputs.classes,
-                            inputs.rx,
-                            inputs.ry,
-                            inputs.width,
-                            inputs.height,
-                            inputs.top,
-                            inputs.left,
+                            dom.text,
+                            dom.value,
+                            dom.tag,
+                            dom.classes,
+                            dom.rx,
+                            dom.ry,
+                            dom.width,
+                            dom.height,
+                            dom.top,
+                            dom.left,
                         ],
                         dim=1,
                     ),
-                    inputs.edge_index,
+                    dom.edge_index,
                 )
             )
             x = torch.cat([x, _add_x], dim=1)
 
+        global_add_x = self.global_conv(x, dom.edge_index)
+        x = torch.cat([x, global_add_x], dim=1)
+
+        # conv over dom+actions to produce action attention mask
+        x_actions = x[actions.dom_index.view(-1)]
+        x_leaves = torch.cat(
+            [
+                x[leaves.dom_index.view(-1)],
+                leaves.origin_length,
+                leaves.action_lenth,
+                leaves.mask.type(torch.float),
+            ],
+            dim=1,
+        )
+
+        leaves_att_raw = self.dom_att_conv(x_leaves, leaves.edge_index)
+        from torch_geometric.utils import softmax
+
+        leaves_att = softmax(leaves_att_raw, leaves.leaf_index)
+        x_actions = x_actions * leaves_att[actions.leaf_node_index]
+
+        objective_att = self.objective_att_query(
+            torch.cat([objectives.key, objectives.query], dim=1)
+        )
+        x_actions = x_actions * objective_att[actions.field_index.view(-1)]
+
+        # print("x", x.shape)
+        # print("x_actions", x_actions.shape)
+        # print(actions.dom_index.shape)
+        # print("objectives", objectives.batch.shape)
+
+        action_potentials = global_max_pool(x_actions, actions.selection_index)
+        action_votes = self.actor_gate(action_potentials)
+        # print("action_votes", action_votes.shape)
+
         x_size = x.shape[1]
-
-        _add_x = torch.tanh(self.global_conv(x, inputs.edge_index))
-        _x = torch.cat([x, _add_x], dim=1)
-
-        # drop non-leaf nodes
-        leaf_mask = (inputs.actionable == 1).squeeze()
-        # assert leaf_mask.sum().item()
-        _x = _x[leaf_mask]
-        _batch = inputs.batch[leaf_mask]
+        _x = x
 
         # critic input is pooled indicators
-        global_mp = global_max_pool(_x, _batch)
+        global_mp = global_max_pool(_x, dom.batch)
         if self.is_recurrent:
             global_mp, rnn_hxs = self._forward_gru(global_mp, rnn_hxs, masks)
-        node_mp = global_mp[_batch]
+        node_mp = global_mp[dom.batch]
         critic_input = torch.cat([_x, node_mp], dim=1).detach()
         critic_add = self.critic_add_gate(critic_input)
-        global_ap = torch.tanh(global_add_pool(torch.relu(critic_add), _batch))
+        global_ap = torch.tanh(global_add_pool(torch.relu(critic_add), dom.batch))
         critic_x = torch.cat([global_mp.detach(), global_ap], dim=1)
 
-        # actor input is node actions with indicator inputs
-        actor_x = torch.cat([_x, node_mp, critic_add.detach()], dim=1)
-
         self.last_x = x
-        self.last_query = query
-
-        self.last_inputs_at = actor_x
-
-        # emit node_id, and field_id attention
-        inputs_votes = self.actor_gate(actor_x)
 
         batch_votes = []
-        batch_size = _batch.max().item() + 1
-        all_votes = torch.zeros(x.shape[0])
-        all_votes.masked_scatter_(leaf_mask, inputs_votes)
+        batch_size = dom.batch.max().item() + 1
+        # all_votes = torch.zeros(x.shape[0])
+        # all_votes.masked_scatter_(leaf_mask, action_votes)
         for i in range(batch_size):
-            _m = inputs.batch == i
-            batch_votes.append(all_votes[_m])
-
+            _m = actions.batch == i
+            batch_votes.append(action_votes[actions.selection_index[_m]])
+        # print("bv", batch_votes[0].shape)
         return (self.critic_linear(critic_x), batch_votes, rnn_hxs)
 
 

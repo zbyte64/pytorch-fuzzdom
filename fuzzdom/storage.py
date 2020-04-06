@@ -26,8 +26,8 @@ class StorageReceipt:
         return self._wrap_results(results)
 
     def issue_receipt(self, state):
-        assert isinstance(state, tuple)
-        assert all(map(lambda x: isinstance(x, Data), state))
+        # always have actions
+        assert len(state[2])
         receipt = self._counter
         self._counter += 1
         self._data[receipt] = state

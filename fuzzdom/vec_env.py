@@ -1,5 +1,6 @@
 from torch_geometric.utils import from_networkx
 from torch_geometric.transforms import Distance
+from torch_geometric.data import Data, Batch
 import gym
 import numpy as np
 import networkx as nx
@@ -22,30 +23,49 @@ def tuplize(f):
     return thunk
 
 
+class SubData(Data):
+    def __init__(self, data_set, **foreign_keys):
+        kwargs = {key: data_set[key] for key in data_set.keys}
+        Data.__init__(self, **kwargs)
+        for key, num in foreign_keys.items():
+            setattr(self, f"__{key}__", num)
+
+    def __inc__(self, key, value):
+        if hasattr(self, f"__{key}__"):
+            return getattr(self, f"__{key}__")
+        return Data.__inc__(self, key, value)
+
+
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
-    e_actions = encode_dom_actionables(e_dom)
+    e_leaves = encode_dom_leaves(e_dom)
+    e_actions = encode_dom_actionables(e_dom, graph_state.fields)
     e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
-    e_dom, e_fields, e_actions, e_history = map(
-        nx.convert_node_labels_to_integers, [e_dom, e_fields, e_actions, e_history]
+    dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
+    leaves_data = SubData(
+        from_networkx(e_leaves), dom_index=dom_data.num_nodes, leaf_index=len(e_leaves)
     )
-    dom_data, fields_data, actions_data, history_data = map(
-        from_networkx, [e_dom, e_fields, e_actions, e_history]
+    actions_data = SubData(
+        from_networkx(e_actions),
+        dom_index=dom_data.num_nodes,
+        field_index=fields_data.num_nodes,
+        leaf_index=len(e_leaves),
+        leaf_node_index=leaves_data.num_nodes,
+        selection_index=len(e_leaves) * len(e_fields),
     )
-    import torch
+    history_data = SubData(
+        from_networkx(e_history),
+        dom_index=dom_data.num_nodes,
+        field_index=fields_data.num_nodes,
+    )
+    # because history is usually empty
+    history_data.num_nodes = len(e_history)
+    assert leaves_data.num_nodes
+    assert len(e_actions)
+    actions_data.num_nodes = len(e_actions)
 
-    dom_data.edge_index, fields_data.edge_index, actions_data.edge_index, history_data.edge_index = map(
-        lambda x: x.type(torch.LongTensor),
-        [
-            dom_data.edge_index,
-            fields_data.edge_index,
-            actions_data.edge_index,
-            history_data.edge_index,
-        ],
-    )
-
-    return (dom_data, fields_data, actions_data, history_data)
+    return (dom_data, fields_data, leaves_data, actions_data, history_data)
 
 
 def encode_fields(fields):
@@ -55,11 +75,44 @@ def encode_fields(fields):
         ke = short_embed(key)
         ve = short_embed(value)
         order = (i + 1) / n
+
         # TODO action_idx & action ?
-        o.add_node(i, key=ke, query=ve, field_idx=(i,), order=(order,))
+        o.add_node(
+            i, key=ke, query=ve, field_idx=(i,), field_index=(i,), order=(order,)
+        )
         if i:
             o.add_edge(i - 1, i)
     return o
+
+
+def encode_dom_actionables(dom_graph: nx.DiGraph, fields):
+    """
+    For each leaf & field emit a sub graph
+    """
+    pa = nx.DiGraph()
+    leaves = filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes)
+    leaf_node_index = -1
+    for i, k in enumerate(leaves):
+        leaf = dom_graph.nodes[k]
+        for u in list(dom_graph.nodes):
+            leaf_node_index = +1
+            for j, (key, value) in enumerate(fields._d.items()):
+                node = dom_graph.nodes[u]
+                pa.add_node(
+                    f"{i}-{j}-{u}",
+                    field_idx=j,
+                    field_index=j,
+                    action_idx=0,
+                    dom_idx=leaf["dom_idx"],
+                    dom_index=node["dom_idx"],
+                    leaf_index=i,
+                    leaf_node_index=leaf_node_index,
+                    selection_index=(i + 1) * (j + 1) - 1,
+                )
+                for (_u, v) in filter(lambda y: y[0] == u, dom_graph.edges(u)):
+                    pa.add_edge(f"{i}-{j}-{u}", f"{i}-{j}-{v}")
+
+    return pa
 
 
 def encode_prior_actions(dom_graph: nx.DiGraph, prior_actions: dict, fields):
@@ -69,42 +122,43 @@ def encode_prior_actions(dom_graph: nx.DiGraph, prior_actions: dict, fields):
         for revision, (action_idx, node, field_idx) in enumerate(revisions):
             action = ["click", "paste_field", "copy", "paste"][action_idx]
             field_key = field_keys[field_idx]
-            k = f"{dom_ref}-{field_key}-{action}"
-            if k in dom_graph:
-                l = f"{dom_ref}-{field_key}-{action}-{revision}"
-                history.add_node(
-                    l,
-                    dom_idx=dom_ref,
-                    field_idx=field_idx,
-                    action_idx=action_id,
-                    revision=revision,
-                    action=action,
-                )
+            k = f"{dom_ref}-{field_key}-{action}-{revision}"
+            history.add_node(
+                k,
+                dom_idx=dom_ref,
+                dom_index=dom_ref,
+                field_idx=field_idx,
+                field_index=field_idx,
+                action_idx=action_id,
+                revision=revision,
+                action=action,
+            )
     return history
 
 
-def encode_dom_actionables(dom_graph: nx.DiGraph):
+def encode_dom_leaves(dom_graph: nx.DiGraph):
     """
     For each leaf node we create a new graph with distances relative to the leaf
     and the values are replaced with a mask
     """
-    potential_actions = nx.DiGraph()
+    pa = nx.DiGraph()
     leaves = filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes)
     for i, k in enumerate(leaves):
         for u in list(dom_graph.nodes):
             node = dom_graph.nodes[u]
             node = {
-                "mask": 1 if u == k else 0,
+                "index": len(pa),
+                "leaf_index": i,
+                "mask": (1,) if u == k else (0,),
                 "dom_idx": node["dom_idx"],
-                "origin_length": 0,
-                "action_lenth": 0,  # nx.shortest_path_length(dom_graph, k, u),
+                "dom_index": node["dom_idx"],
+                "origin_length": (0.0,),
+                "action_lenth": (0.0,),  # nx.shortest_path_length(dom_graph, k, u),
             }
-            l = f"{i}-{u}"
-            potential_actions.add_node(l, **node)
+            pa.add_node(f"{k}-{u}", **node)
             for (_u, v) in filter(lambda y: y[0] == u, dom_graph.edges(u)):
-                m = f"{i}-{v}"
-                potential_actions.add_edge(l, m)
-    return potential_actions
+                pa.add_edge(f"{k}-{u}", f"{k}-{v}")
+    return pa
 
 
 def encode_dom_graph(g: nx.DiGraph, encode_with=None):
@@ -137,7 +191,7 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         encoded_data = dict()
         for key, f in encode_with.items():
             encoded_data[key] = f(g.nodes[node].get(key))
-        encoded_data["dom_idx"] = (i,)
+        encoded_data["dom_index"] = encoded_data["dom_idx"] = (i,)
         encoded_data["depth"] = ((d.get(node, 0) + 1) / max_depth,)
         o.add_node(i, **encoded_data)
         numeric_map[node] = i
@@ -172,21 +226,19 @@ class GraphGymWrapper(gym.Wrapper):
 
     def action(self, action):
         assert len(action) == 1, str(action)
-        assert len(self.last_observation.dom_idx.shape) == 2, str(
-            self.last_observation.dom_idx.shape
-        )
+        dom, objectives, leaves, actions, history = self.last_observation
         node_idx = action[0]
-        action_id = self.last_observation.action_idx[node_idx].item()
-        dom_idx = self.last_observation.dom_idx[node_idx].item()
-        field_idx = self.last_observation.field_idx[node_idx].item()
+        action_id = actions.action_idx[node_idx].item()
+        dom_idx = actions.dom_idx[node_idx].item()
+        field_idx = actions.field_idx[node_idx].item()
         dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]
         field_value = list(self.last_state.fields.values)[field_idx]
-        n = {
-            k: self.last_observation[k][node_idx]
-            for k in self.last_observation.keys
-            if not k.startswith("edge_")
-        }
-        self.prior_actions[dom_ref].append((action_id, n, field_idx))
+        # n = {
+        #    k: self.last_observation[k][node_idx]
+        #    for k in self.last_observation.keys
+        #    if not k.startswith("edge_")
+        # }
+        # self.prior_actions[dom_ref].append((action_id, n, field_idx))
         return (action_id, dom_ref, field_value)
 
     def observation(self, obs: MiniWoBGraphState):

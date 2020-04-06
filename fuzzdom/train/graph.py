@@ -299,6 +299,7 @@ def main():
             #    "task_ranks", torch.tensor(predictor._difficulty_rank), total_num_steps
             # )
             tensorboard_writer.add_histogram("value", value, total_num_steps)
+            """
             tensorboard_writer.add_histogram(
                 "x", actor_critic.base.last_x, total_num_steps
             )
@@ -308,6 +309,7 @@ def main():
             tensorboard_writer.add_histogram(
                 "inputs_at", actor_critic.base.last_inputs_at, total_num_steps
             )
+            """
 
             tensorboard_writer.add_scalar(
                 "mean_reward", np.mean(episode_rewards), total_num_steps
