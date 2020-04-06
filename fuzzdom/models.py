@@ -9,6 +9,7 @@ from torch_geometric.nn import (
     global_mean_pool,
 )
 import torch.nn.functional as F
+from torch_geometric.utils import softmax
 
 from a2c_ppo_acktr.model import NNBase
 from a2c_ppo_acktr.utils import init
@@ -47,6 +48,7 @@ class GNNBase(NNBase):
 
         self.dom_att_conv = SAGEConv(hidden_size + 3, 1)
         self.objective_att_query = init_t(nn.Linear(text_embed_size * 2, hidden_size))
+        self.objective_att_conv = SAGEConv(hidden_size * 2 + 1, 1)
 
         # TODO num-actions + 1
         self.action_embedding = nn.Sequential(nn.Embedding(5, 2), nn.Tanh())
@@ -129,7 +131,6 @@ class GNNBase(NNBase):
         )
 
         leaves_att_raw = self.dom_att_conv(x_leaves, leaves.edge_index)
-        from torch_geometric.utils import softmax
 
         leaves_att = softmax(leaves_att_raw, leaves.leaf_index)
         x_actions = x_actions * leaves_att[actions.dom_leaf_index]
@@ -137,7 +138,19 @@ class GNNBase(NNBase):
         objective_att = self.objective_att_query(
             torch.cat([objectives.key, objectives.query], dim=1)
         )
-        x_actions = x_actions * objective_att[actions.field_index]
+        x_obj = torch.cat(
+            [
+                x[objectives_projection.dom_index],
+                objectives.order[objectives_projection.field_index],
+                objective_att[objectives_projection.field_index],
+            ],
+            dim=1,
+        )
+        x_obj = self.objective_att_conv(x_obj, objectives_projection.edge_index)
+
+        x_actions = (
+            x_actions * x_obj[objectives_projection.dom_index[actions.dom_field_index]]
+        )
 
         # print("x", x.shape)
         # print("x_actions", x_actions.shape)
