@@ -1,10 +1,11 @@
-from torch_geometric.utils import from_networkx
+from torch_geometric.utils import from_networkx as _from_networkx
 from torch_geometric.transforms import Distance
 from torch_geometric.data import Data, Batch
 import gym
 import numpy as np
 import networkx as nx
 from collections import defaultdict
+import itertools
 
 from .domx import short_embed
 from .state import MiniWoBGraphState
@@ -23,9 +24,25 @@ def tuplize(f):
     return thunk
 
 
+def from_networkx(g, **indexes):
+    data = SubData(_from_networkx(g), **indexes)
+    data.num_nodes = len(g.nodes)
+    return data
+
+
 class SubData(Data):
+    """
+    Data meant to be packed with other data of different sizes
+    pass in index sizes to auto increment while batching
+    """
+
     def __init__(self, data_set, **foreign_keys):
-        kwargs = {key: data_set[key] for key in data_set.keys}
+        kwargs = {
+            key: data_set[key].view(-1)
+            if key.endswith("index") and not key.startswith("edge_")
+            else data_set[key]
+            for key in data_set.keys
+        }
         Data.__init__(self, **kwargs)
         for key, num in foreign_keys.items():
             setattr(self, f"__{key}__", num)
@@ -39,33 +56,101 @@ class SubData(Data):
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
-    e_leaves = encode_dom_leaves(e_dom)
-    e_actions = encode_dom_actionables(e_dom, graph_state.fields)
+    fields_projection_data, _ = vectorize_projections(
+        {"field": list(range(len(e_fields.nodes)))},
+        e_dom,
+        source_domain="dom",
+        final_domain="dom_field",
+    )
+    e_leaves, leaves = encode_dom_leaves(e_dom)
+    actions_data, _ = vectorize_projections(
+        {
+            "mouse_action": [{"action_idx": 0}],
+            "field": [{"field_idx": i} for i in e_fields.nodes],
+            "leaf": [{"dom_idx": e_dom.nodes[i]["dom_idx"]} for i in leaves],
+        },
+        e_dom,
+        source_domain="dom",
+        final_domain="action",
+    )
     e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
-    leaves_data = SubData(
-        from_networkx(e_leaves), dom_index=dom_data.num_nodes, leaf_index=len(e_leaves)
+    leaves_data = from_networkx(
+        e_leaves, dom_index=dom_data.num_nodes, leaf_index=len(e_leaves)
     )
-    actions_data = SubData(
-        from_networkx(e_actions),
-        dom_index=dom_data.num_nodes,
-        field_index=fields_data.num_nodes,
-        leaf_index=len(e_leaves),
-        leaf_node_index=leaves_data.num_nodes,
-        selection_index=len(e_leaves) * len(e_fields),
-    )
-    history_data = SubData(
-        from_networkx(e_history),
-        dom_index=dom_data.num_nodes,
-        field_index=fields_data.num_nodes,
+    history_data = from_networkx(
+        e_history, dom_index=dom_data.num_nodes, field_index=fields_data.num_nodes
     )
     # because history is usually empty
     history_data.num_nodes = len(e_history)
     assert leaves_data.num_nodes
-    assert len(e_actions)
-    actions_data.num_nodes = len(e_actions)
 
-    return (dom_data, fields_data, leaves_data, actions_data, history_data)
+    return (
+        dom_data,
+        fields_data,
+        fields_projection_data,
+        leaves_data,
+        actions_data,
+        history_data,
+    )
+
+
+def vectorize_projections(
+    projections: dict, source: nx.DiGraph, source_domain: str, final_domain: str
+):
+    g, combinations = encode_projections(
+        projections, source, source_domain, final_domain
+    )
+    indexes = {
+        f"{p_domain}_index": len(entries) for p_domain, entries in projections.items()
+    }
+    indexes[f"{final_domain}_index"] = len(combinations)
+    indexes[f"{source_domain}_index"] = len(source.nodes)
+    for p_domain, p_values in projections.items():
+        indexes[f"{source_domain}_{p_domain}_index"] = len(source.nodes) * len(p_values)
+
+    data = from_networkx(g, **indexes)
+    return data, g
+
+
+def encode_projections(
+    projections: dict, source: nx.DiGraph, source_domain: str, final_domain: str
+):
+    """
+    Encodes a new instance of `source` for each entry in `projections`
+
+    projections: {proj_domain0: [items], proj_domain1: [items]...}
+    """
+    index = -1
+    dst = nx.DiGraph()
+    proj_domains = list(projections.keys())
+    combinations = list(itertools.product(*map(enumerate, projections.values())))
+    for k, p in enumerate(combinations):
+        # value w/ enum: [ (0, x0), (1, x1) ]
+        # p: [(proj_index_0, proj_value_0), ...]
+        for u in list(source.nodes):
+            index += 1
+            src_node = source.nodes[u]
+            node_index = src_node["index"]
+            node = {
+                "index": index,
+                f"{final_domain}_index": k,
+                f"{source_domain}_index": node_index,
+            }
+            for src_index, (proj_index, proj_value) in enumerate(p):
+                p_domain = proj_domains[src_index]
+                node[f"{source_domain}_{p_domain}_index"] = (proj_index + 1) * (
+                    node_index + 1
+                ) - 1
+                node[f"{p_domain}_index"] = proj_index
+                if isinstance(proj_value, dict):
+                    node.update(proj_value)
+                elif proj_value is not None:
+                    node[f"{p_domain}_value"] = proj_value
+            dst.add_node(f"{k}-{u}", **node)
+            for (_u, v) in filter(lambda y: y[0] == u, source.edges(u)):
+                dst.add_edge(f"{k}-{u}", f"{k}-{v}")
+    return dst, combinations
 
 
 def encode_fields(fields):
@@ -77,9 +162,7 @@ def encode_fields(fields):
         order = (i + 1) / n
 
         # TODO action_idx & action ?
-        o.add_node(
-            i, key=ke, query=ve, field_idx=(i,), field_index=(i,), order=(order,)
-        )
+        o.add_node(i, key=ke, query=ve, field_idx=(i,), index=i, order=(order,))
         if i:
             o.add_edge(i - 1, i)
     return o
@@ -142,7 +225,7 @@ def encode_dom_leaves(dom_graph: nx.DiGraph):
     and the values are replaced with a mask
     """
     pa = nx.DiGraph()
-    leaves = filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes)
+    leaves = list(filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes))
     for i, k in enumerate(leaves):
         for u in list(dom_graph.nodes):
             node = dom_graph.nodes[u]
@@ -158,7 +241,7 @@ def encode_dom_leaves(dom_graph: nx.DiGraph):
             pa.add_node(f"{k}-{u}", **node)
             for (_u, v) in filter(lambda y: y[0] == u, dom_graph.edges(u)):
                 pa.add_edge(f"{k}-{u}", f"{k}-{v}")
-    return pa
+    return pa, leaves
 
 
 def encode_dom_graph(g: nx.DiGraph, encode_with=None):
@@ -191,7 +274,8 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         encoded_data = dict()
         for key, f in encode_with.items():
             encoded_data[key] = f(g.nodes[node].get(key))
-        encoded_data["dom_index"] = encoded_data["dom_idx"] = (i,)
+        encoded_data["index"] = i
+        encoded_data["dom_idx"] = (i,)
         encoded_data["depth"] = ((d.get(node, 0) + 1) / max_depth,)
         o.add_node(i, **encoded_data)
         numeric_map[node] = i
@@ -226,7 +310,9 @@ class GraphGymWrapper(gym.Wrapper):
 
     def action(self, action):
         assert len(action) == 1, str(action)
-        dom, objectives, leaves, actions, history = self.last_observation
+        dom, objectives, obj_projection, leaves, actions, history = (
+            self.last_observation
+        )
         node_idx = action[0]
         action_id = actions.action_idx[node_idx].item()
         dom_idx = actions.dom_idx[node_idx].item()

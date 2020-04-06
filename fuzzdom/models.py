@@ -72,7 +72,7 @@ class GNNBase(NNBase):
 
         assert isinstance(inputs, tuple), str(type(inputs))
         assert all(map(lambda x: isinstance(x, Batch), inputs))
-        dom, objectives, leaves, actions, history = inputs
+        dom, objectives, objectives_projection, leaves, actions, history = inputs
         # actions.original_batch
         assert actions.edge_index is not None, str(inputs)
 
@@ -117,10 +117,10 @@ class GNNBase(NNBase):
         x = torch.cat([x, global_add_x], dim=1)
 
         # conv over dom+actions to produce action attention mask
-        x_actions = x[actions.dom_index.view(-1)]
+        x_actions = x[actions.dom_index]
         x_leaves = torch.cat(
             [
-                x[leaves.dom_index.view(-1)],
+                x[leaves.dom_index],
                 leaves.origin_length,
                 leaves.action_lenth,
                 leaves.mask.type(torch.float),
@@ -132,19 +132,19 @@ class GNNBase(NNBase):
         from torch_geometric.utils import softmax
 
         leaves_att = softmax(leaves_att_raw, leaves.leaf_index)
-        x_actions = x_actions * leaves_att[actions.leaf_node_index]
+        x_actions = x_actions * leaves_att[actions.dom_leaf_index]
 
         objective_att = self.objective_att_query(
             torch.cat([objectives.key, objectives.query], dim=1)
         )
-        x_actions = x_actions * objective_att[actions.field_index.view(-1)]
+        x_actions = x_actions * objective_att[actions.field_index]
 
         # print("x", x.shape)
         # print("x_actions", x_actions.shape)
         # print(actions.dom_index.shape)
         # print("objectives", objectives.batch.shape)
 
-        action_potentials = global_max_pool(x_actions, actions.selection_index)
+        action_potentials = global_max_pool(x_actions, actions.action_index)
         action_votes = self.actor_gate(action_potentials)
         # print("action_votes", action_votes.shape)
 
@@ -167,9 +167,19 @@ class GNNBase(NNBase):
         batch_size = dom.batch.max().item() + 1
         # all_votes = torch.zeros(x.shape[0])
         # all_votes.masked_scatter_(leaf_mask, action_votes)
+        """
+        print("#" * 20)
+        print(actions.action_index)
+        print("actins_index", actions.action_index.shape)
+        print("x_actions", x_actions.shape)
+        print("action_potentials", action_potentials.shape)
+        print("action_votes", action_votes.shape)
+        print(actions.dom_field_index.shape)
+        """
         for i in range(batch_size):
             _m = actions.batch == i
-            batch_votes.append(action_votes[actions.selection_index[_m]])
+            # print(_m.shape)
+            batch_votes.append(action_votes[actions.action_index[_m]])
         # print("bv", batch_votes[0].shape)
         return (self.critic_linear(critic_x), batch_votes, rnn_hxs)
 
