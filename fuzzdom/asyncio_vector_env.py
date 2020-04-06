@@ -141,7 +141,7 @@ class AsyncioVectorEnv(VectorEnv):
             env = self.envs[i]
             if isinstance(result, Exception):
                 print("Error:", type(result), result, self.envs[i].task)
-                # traceback.print_exception(result)
+                traceback.print_exception(type(result), result, result.__traceback__)
                 observation, self._rewards[i], self._dones[i], info = [
                     call_wrapped_async_reset(env),
                     0.0,

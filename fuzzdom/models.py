@@ -46,13 +46,12 @@ class GNNBase(NNBase):
         assert hidden_size > query_input_dim + 16
         self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
 
+        self.history_att_conv = SAGEConv(5, 1)
         self.dom_att_conv = SAGEConv(hidden_size + 3, 1)
         self.objective_att_query = init_t(nn.Linear(text_embed_size * 2, hidden_size))
         self.objective_att_conv = SAGEConv(hidden_size * 2 + 1, hidden_size)
+        self.actions_conv = SAGEConv(hidden_size * 2 + 5, hidden_size)
 
-        # TODO num-actions + 1
-        self.action_embedding = nn.Sequential(nn.Embedding(5, 2), nn.Tanh())
-        self.field_key = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
         self.dom_tag = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
         self.dom_classes = nn.Sequential(
             init_t(nn.Linear(text_embed_size, 5)), nn.Tanh()
@@ -118,6 +117,27 @@ class GNNBase(NNBase):
         global_add_x = self.global_conv(x, dom.edge_index)
         x = torch.cat([x, global_add_x], dim=1)
 
+        if False and history.num_nodes:
+            # process history into seperate attention scores and cast onto final action graph
+            history_att = self.history_att_conv(
+                history.action_one_hot, history.edge_index
+            )
+            history_att_dom = global_max_pool(history_att, history.dom_index)
+            print(history.dom_index)
+            print(history_att_dom.shape)
+            print(actions.dom_leaf_index.shape)
+            history_att_dom = history_att_dom[actions.dom_leaf_index]
+            history_att_ux = global_max_pool(history_att, history.ux_action_index)[
+                actions.ux_action_index
+            ]
+            history_att_obj = global_max_pool(history_att, history.field_index)[
+                actions.field_index
+            ]
+        else:
+            history_att_dom = 1
+            history_att_ux = 1
+            history_att_obj = 1
+
         # conv over dom+actions to produce action attention mask
         x_actions = x[actions.dom_index]
         x_leaves = torch.cat(
@@ -133,7 +153,7 @@ class GNNBase(NNBase):
         leaves_att_raw = self.dom_att_conv(x_leaves, leaves.edge_index)
 
         leaves_att = softmax(leaves_att_raw, leaves.leaf_index)
-        x_actions = x_actions * leaves_att[actions.dom_leaf_index]
+        x_actions = x_actions * leaves_att[actions.dom_leaf_index] * history_att_dom
 
         objective_att = self.objective_att_query(
             torch.cat([objectives.key, objectives.query], dim=1)
@@ -149,8 +169,16 @@ class GNNBase(NNBase):
         x_obj = self.objective_att_conv(x_obj, objectives_projection.edge_index)
 
         x_actions = (
-            x_actions * x_obj[objectives_projection.dom_index[actions.dom_field_index]]
+            x_actions
+            * x_obj[objectives_projection.dom_index[actions.dom_field_index]]
+            * history_att_obj
         )
+        x_actions = torch.cat(
+            [x_actions, actions.action_one_hot, objective_att[actions.field_index]],
+            dim=1,
+        )
+        x_actions = self.actions_conv(x_actions, actions.edge_index)
+        x_actions = x_actions * history_att_ux
 
         # print("x", x.shape)
         # print("x_actions", x_actions.shape)

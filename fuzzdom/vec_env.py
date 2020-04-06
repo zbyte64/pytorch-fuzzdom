@@ -23,6 +23,12 @@ def tuplize(f):
     return thunk
 
 
+def one_hot(i, k):
+    oh = np.zeros((k,), np.float32)
+    oh[i] = 1
+    return oh
+
+
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
@@ -35,7 +41,9 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_leaves, leaves = encode_dom_leaves(e_dom)
     actions_data, _ = vectorize_projections(
         {
-            "mouse_action": [{"action_idx": 0}],
+            "ux_action": [
+                {"action_idx": i, "action_one_hot": one_hot(i, 5)} for i in range(4)
+            ],
             "field": [{"field_idx": i} for i in e_fields.nodes],
             "leaf": [{"dom_idx": e_dom.nodes[i]["dom_idx"]} for i in leaves],
         },
@@ -49,7 +57,10 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
         e_leaves, dom_index=dom_data.num_nodes, leaf_index=len(e_leaves)
     )
     history_data = from_networkx(
-        e_history, dom_index=dom_data.num_nodes, field_index=fields_data.num_nodes
+        e_history,
+        ux_action_index=4,
+        dom_index=dom_data.num_nodes,
+        field_index=fields_data.num_nodes,
     )
     # because history is usually empty
     history_data.num_nodes = len(e_history)
@@ -80,54 +91,24 @@ def encode_fields(fields):
     return o
 
 
-def encode_dom_actionables(dom_graph: nx.DiGraph, fields):
-    """
-    For each leaf & field emit a sub graph
-    """
-    pa = nx.DiGraph()
-    leaves = filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes)
-    leaf_node_index = -1
-    for i, k in enumerate(leaves):
-        leaf = dom_graph.nodes[k]
-        for u in list(dom_graph.nodes):
-            leaf_node_index = +1
-            for j, (key, value) in enumerate(fields._d.items()):
-                node = dom_graph.nodes[u]
-                pa.add_node(
-                    f"{i}-{j}-{u}",
-                    field_idx=j,
-                    field_index=j,
-                    action_idx=0,
-                    dom_idx=leaf["dom_idx"],
-                    dom_index=node["dom_idx"],
-                    leaf_index=i,
-                    leaf_node_index=leaf_node_index,
-                    selection_index=(i + 1) * (j + 1) - 1,
-                )
-                for (_u, v) in filter(lambda y: y[0] == u, dom_graph.edges(u)):
-                    pa.add_edge(f"{i}-{j}-{u}", f"{i}-{j}-{v}")
-
-    return pa
-
-
-def encode_prior_actions(dom_graph: nx.DiGraph, prior_actions: dict, fields):
+def encode_prior_actions(dom_graph: nx.DiGraph, prior_actions: [], fields):
     history = nx.DiGraph()
     field_keys = list(fields.keys)
-    for dom_ref, revisions in prior_actions.items():
-        for revision, (action_idx, node, field_idx) in enumerate(revisions):
-            action = ["click", "paste_field", "copy", "paste"][action_idx]
-            field_key = field_keys[field_idx]
-            k = f"{dom_ref}-{field_key}-{action}-{revision}"
-            history.add_node(
-                k,
-                dom_idx=dom_ref,
-                dom_index=dom_ref,
-                field_idx=field_idx,
-                field_index=field_idx,
-                action_idx=action_id,
-                revision=revision,
-                action=action,
-            )
+    for revision, (action_idx, dom_idx, field_idx) in enumerate(prior_actions):
+        action = ["click", "paste_field", "copy", "paste", "sleep"][action_idx]
+        field_key = field_keys[field_idx]
+        history.add_node(
+            revision,
+            dom_idx=dom_idx,
+            dom_index=dom_idx,
+            field_idx=field_idx,
+            field_index=field_idx,
+            action_idx=action_idx,
+            action_one_hot=one_hot(action_idx, 5),
+            ux_action_index=action_idx,
+            revision=revision,
+            action=action,
+        )
     return history
 
 
@@ -236,7 +217,7 @@ class GraphGymWrapper(gym.Wrapper):
         #    for k in self.last_observation.keys
         #    if not k.startswith("edge_")
         # }
-        # self.prior_actions[dom_ref].append((action_id, n, field_idx))
+        self.prior_actions.append((action_id, dom_idx, field_idx))
         return (action_id, dom_ref, field_value)
 
     def observation(self, obs: MiniWoBGraphState):
@@ -254,10 +235,10 @@ class GraphGymWrapper(gym.Wrapper):
     def step_result(self, result):
         observation, reward, done, info = result
         if done or info.get("task_done"):
-            self.prior_actions = defaultdict(list)
+            self.prior_actions = []
 
     def reset(self):
-        self.prior_actions = defaultdict(list)
+        self.prior_actions = []
         obs = self.env.reset()
         return self.observation(obs)
 

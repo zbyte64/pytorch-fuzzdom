@@ -37,6 +37,9 @@ class SubData(Data):
 def vectorize_projections(
     projections: dict, source: nx.DiGraph, source_domain: str, final_domain: str
 ):
+    """
+    Creates indexes
+    """
     g, combinations = encode_projections(
         projections, source, source_domain, final_domain
     )
@@ -101,27 +104,8 @@ class TupleBatch:
             packed_sample = []
             ret.append(packed_sample)
             for source in samples:
-                if isinstance(source, Data):
-                    # why do we get floats?
-                    source.edge_index = source.edge_index.type(torch.long)
-                    packed_sample.append(source)
-                else:
-                    # array of data
-                    s = list(source)
-                    if not s:
-                        s = source
-                    else:
-                        s = Batch.from_data_list(s)
-                    packed_sample.append(s)
-        known_types = {}
-        # data_list is a list of tuples
-
-        for i, entry in enumerate(ret):
-            for j, data in enumerate(entry):
-                for key in data.keys:
-                    _type = data[key].type()
-                    if key in known_types:
-                        assert known_types[key] == _type, key
-                    else:
-                        known_types[key] = _type
+                assert isinstance(source, Data)
+                # why do we get floats?
+                source.edge_index = source.edge_index.type(torch.long)
+                packed_sample.append(source)
         return tuple(map(Batch.from_data_list, zip(*ret)))
