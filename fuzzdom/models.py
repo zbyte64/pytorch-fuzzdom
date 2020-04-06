@@ -48,7 +48,7 @@ class GNNBase(NNBase):
 
         self.dom_att_conv = SAGEConv(hidden_size + 3, 1)
         self.objective_att_query = init_t(nn.Linear(text_embed_size * 2, hidden_size))
-        self.objective_att_conv = SAGEConv(hidden_size * 2 + 1, 1)
+        self.objective_att_conv = SAGEConv(hidden_size * 2 + 1, hidden_size)
 
         # TODO num-actions + 1
         self.action_embedding = nn.Sequential(nn.Embedding(5, 2), nn.Tanh())
@@ -161,15 +161,12 @@ class GNNBase(NNBase):
         action_votes = self.actor_gate(action_potentials)
         # print("action_votes", action_votes.shape)
 
-        x_size = x.shape[1]
-        _x = x
-
         # critic input is pooled indicators
-        global_mp = global_max_pool(_x, dom.batch)
+        global_mp = global_max_pool(x, dom.batch)
         if self.is_recurrent:
             global_mp, rnn_hxs = self._forward_gru(global_mp, rnn_hxs, masks)
         node_mp = global_mp[dom.batch]
-        critic_input = torch.cat([_x, node_mp], dim=1).detach()
+        critic_input = torch.cat([x, node_mp], dim=1).detach()
         critic_add = self.critic_add_gate(critic_input)
         global_ap = torch.tanh(global_add_pool(torch.relu(critic_add), dom.batch))
         critic_x = torch.cat([global_mp.detach(), global_ap], dim=1)
