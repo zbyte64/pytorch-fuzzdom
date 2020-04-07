@@ -121,14 +121,13 @@ def encode_dom_leaves(dom_graph: nx.DiGraph):
     pa = nx.DiGraph()
     leaves = list(filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes))
     for i, k in enumerate(leaves):
-        for u in list(dom_graph.nodes):
-            node = dom_graph.nodes[u]
+        for u, dom_node in dom_graph.nodes(data=True):
             node = {
-                "index": len(pa),
+                "index": pa.number_of_nodes(),
                 "leaf_index": i,
                 "mask": (1,) if u == k else (0,),
-                "dom_idx": node["dom_idx"],
-                "dom_index": node["dom_idx"],
+                "dom_idx": dom_node["dom_idx"],
+                "dom_index": dom_node["dom_idx"],
                 "origin_length": (0.0,),
                 "action_lenth": (0.0,),  # nx.shortest_path_length(dom_graph, k, u),
             }
@@ -164,10 +163,10 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         }
     d = nx.shortest_path_length(g, list(g.nodes)[0])
     max_depth = max(d.values()) + 1
-    for i, node in enumerate(g.nodes):
+    for i, (node, node_data) in enumerate(g.nodes(data=True)):
         encoded_data = dict()
         for key, f in encode_with.items():
-            encoded_data[key] = f(g.nodes[node].get(key))
+            encoded_data[key] = f(node_data.get(key))
         encoded_data["index"] = i
         encoded_data["dom_idx"] = (i,)
         encoded_data["depth"] = ((d.get(node, 0) + 1) / max_depth,)

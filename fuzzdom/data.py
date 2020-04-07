@@ -7,7 +7,7 @@ from torch_geometric.data import Batch, Data
 
 def from_networkx(g, **indexes):
     data = SubData(_from_networkx(g), **indexes)
-    data.num_nodes = len(g.nodes)
+    data.num_nodes = g.number_of_nodes()
     return data
 
 
@@ -47,7 +47,7 @@ def vectorize_projections(
         f"{p_domain}_index": len(entries) for p_domain, entries in projections.items()
     }
     indexes[f"{final_domain}_index"] = len(combinations)
-    indexes[f"{source_domain}_index"] = len(source.nodes)
+    indexes[f"{source_domain}_index"] = source.number_of_nodes()
     for p_domain, p_values in projections.items():
         indexes[f"{source_domain}_{p_domain}_index"] = len(source.nodes) * len(p_values)
 
@@ -70,9 +70,8 @@ def encode_projections(
     for k, p in enumerate(combinations):
         # value w/ enum: [ (0, x0), (1, x1) ]
         # p: [(proj_index_0, proj_value_0), ...]
-        for u in list(source.nodes):
+        for u, src_node in source.nodes(data=True):
             index += 1
-            src_node = source.nodes[u]
             node_index = src_node["index"]
             node = {
                 "index": index,
