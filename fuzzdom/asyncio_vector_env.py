@@ -1,9 +1,9 @@
 import numpy as np
 from copy import deepcopy
-import threading
-import time
 import asyncio
-from queue import Queue, Empty
+#from concurrent.futures import ProcessPoolExecutor
+from torch.multiprocessing import Pool
+
 import traceback
 from unittest.mock import patch
 
@@ -12,14 +12,25 @@ from gym.vector.vector_env import VectorEnv
 from gym.vector.utils import concatenate, create_empty_array
 
 
-def resolve_env_fn(env, value, fn):
-    if getattr(env, "env", None):
-        value = resolve_env_fn(env.env, value, fn)
-    if hasattr(env, fn):
-        if hasattr(env, "env") and getattr(env.env, fn, None) == getattr(env, fn):
-            return value
-        value = getattr(env, fn)(value)
+def get_env_fn(env, fn):
+    fns = []
+    while env:
+        if hasattr(type(env), fn):
+            fns.append(getattr(env, fn))
+        env = getattr(env, "env", None)
+    fns.reverse()
+    return fns
+
+
+def eval_env_fn(fns, value):
+    for fn in fns:
+        value = fn(value)
     return value
+
+
+def resolve_env_fn(env, value, fn):
+    fns = get_env_fn(env, fn)
+    return eval_env_fn(fns, value)
 
 
 async def call_wrapped_async_reset(env, *args):
@@ -41,8 +52,9 @@ async def call_wrapped_async_step(env, action):
     result = await root_env.async_step(action)
     _ = resolve_env_fn(env, result, "step_result")
     reward = resolve_env_fn(env, result[1], "reward")
-    obs = resolve_env_fn(env, result[0], "observation")
-    return (obs, reward, *result[2:])
+    #intensive serialization gets tasked out
+    #obs = await resolve_env_fn(env, result[0], "observation", executor)
+    return (result[0], reward, *result[2:])
 
 
 class AsyncioVectorEnv(VectorEnv):
@@ -88,6 +100,8 @@ class AsyncioVectorEnv(VectorEnv):
         self._actions = None
         self.closed = False
         self.loop = asyncio.get_event_loop()
+        self.pool = Pool(self.num_envs)
+        self.executor = None
 
     def seed(self, seeds=None):
         if seeds is None:
@@ -152,13 +166,7 @@ class AsyncioVectorEnv(VectorEnv):
                 observation, self._rewards[i], self._dones[i], info = result
             observations.append(observation)
             infos.append(info)
-        p = await (asyncio.gather(*[o for o in observations if asyncio.iscoroutine(o)]))
-        j = 0
-        for i, o in enumerate(observations):
-            if asyncio.iscoroutine(o):
-                observations[i] = p[j]
-                j += 1
-
+        observations = await self.process_observations(observations)
         concatenate(observations, self.observations, self.single_observation_space)
 
         return (
@@ -183,3 +191,21 @@ class AsyncioVectorEnv(VectorEnv):
 
     def _check_observation_spaces(self):
         pass
+
+    async def process_observations(self, observations):
+        #coroutines are resets
+        obs = [o for o in observations if not asyncio.iscoroutine(o)]
+        p = await (asyncio.gather(*[o for o in observations if asyncio.iscoroutine(o)]))
+        all_fns = map(lambda e: get_env_fn(e, "observation"), self.envs)
+        v_obs = tuple(map(lambda x: eval_env_fn(*x), zip(all_fns, obs)))
+        #v_obs = self.pool.map(eval_env_fn, zip(all_fns, obs))
+        k = j = 0
+        p_obs = []
+        for i, o in enumerate(observations):
+            if asyncio.iscoroutine(o):
+                p_obs.append(p[j])
+                j += 1
+            else:
+                p_obs.append(v_obs[k])
+                k += 1
+        return p_obs

@@ -4,6 +4,7 @@ import gym
 import numpy as np
 import networkx as nx
 from collections import defaultdict
+import asyncio
 
 from .domx import short_embed
 from .state import MiniWoBGraphState
@@ -221,11 +222,20 @@ class GraphGymWrapper(gym.Wrapper):
         return (action_id, dom_ref, field_value)
 
     def observation(self, obs: MiniWoBGraphState):
-        assert isinstance(obs, MiniWoBGraphState)
+        assert isinstance(obs, MiniWoBGraphState), str(type(obs))
         self.last_state = obs
         obs = state_to_vector(obs, self.prior_actions)
         self.last_observation = obs
         return obs
+
+    async def exec_observation(self, obs, executor):
+        #TODO depends on pytorch support for asyncio
+        assert isinstance(obs, MiniWoBGraphState), str(type(obs))
+        self.last_state = obs
+        v_obs = executor.apply(state_to_vector, (obs, self.prior_actions))
+        #v_obs = await asyncio.wrap_future(obs_fut)
+        self.last_observation = v_obs
+        return v_obs
 
     def step(self, action):
         observation, reward, done, info = self.env.step(self.action(action))
