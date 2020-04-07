@@ -258,7 +258,9 @@ class AsyncioVectorEnv(VectorEnv):
             obs = map(
                 lambda x: x[0]
                 if asyncio.iscoroutine(x[0])
-                else resolve_env_fn(x[1], x[0], "observation", self.executor),
+                else asyncio.wait_for(
+                    resolve_env_fn(x[1], x[0], "observation", self.executor), 15.0
+                ),
                 zip(observations, self.envs),
             )
 

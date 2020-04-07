@@ -33,7 +33,7 @@ class _PytorchSafeQueue(Queue):
 
 class PytorchProcessPoolExecutor(ProcessPoolExecutor):
     def __init__(self, *args, **kwargs):
-        kwargs["mp_context"] = mp_context
+        kwargs["mp_context"] = mp  # mp_context
         ProcessPoolExecutor.__init__(self, *args, **kwargs)
         queue_size = self._max_workers + EXTRA_QUEUED_CALLS
         self._call_queue = _PytorchSafeQueue(

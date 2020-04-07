@@ -273,16 +273,19 @@ def mp_observation(pool, envs, obs):
 
 def make_vec_envs(envs, receipts):
     from .asyncio_vector_env import AsyncioVectorEnv
+
     from torch.multiprocessing import Pool, cpu_count
+
+    # from multiprocessing import Pool, cpu_count
     from functools import partial
 
-    p = Pool(cpu_count())
+    # p = Pool(cpu_count())
 
     envs = [
         ReceiptsGymWrapper(GraphGymWrapper(env), receipt_factory=receipts)
         for env in envs
     ]
-    vec_env = AsyncioVectorEnv(envs, do_observations=partial(mp_observation, p))
+    vec_env = AsyncioVectorEnv(envs)  # , do_observations=partial(mp_observation, p))
     vec_env.observations = np.zeros((len(envs), 1), dtype=np.int32) - 1
     vec_env.action_space = gym.spaces.Discrete(1)
     return vec_env
