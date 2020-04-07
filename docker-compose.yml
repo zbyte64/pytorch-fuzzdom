@@ -3,6 +3,8 @@ services:
   app:
     build: .
     image: fuzzdom
+    # for CUDA access
+    ipc: "host"
     environment:
       SELENIUM_URL: http://selenium:4444/wd/hub
     links:
