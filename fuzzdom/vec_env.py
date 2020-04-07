@@ -230,8 +230,12 @@ class GraphGymWrapper(gym.Wrapper):
     async def exec_observation(self, obs, executor):
         # TODO depends on pytorch support for asyncio
         assert isinstance(obs, MiniWoBGraphState), str(type(obs))
-        obs_fut = executor.submit(state_to_vector, obs, self.prior_actions)
-        v_obs = await asyncio.wrap_future(obs_fut)
+        # obs_fut = executor.submit(state_to_vector, obs, self.prior_actions)
+        loop = asyncio.get_event_loop()
+        v_obs = await loop.run_in_executor(
+            executor, state_to_vector, obs, self.prior_actions
+        )
+        # v_obs = await asyncio.wrap_future(obs_fut)
         self.last_observation = v_obs
         self.last_state = obs
         return v_obs
