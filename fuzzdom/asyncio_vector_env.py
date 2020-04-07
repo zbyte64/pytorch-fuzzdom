@@ -15,6 +15,9 @@ from .process import PytorchProcessPoolExecutor
 
 
 def get_env_fn(env, fn, with_executor=False):
+    """
+    Collect the innermost methods first
+    """
     fns = []
     while env:
         if with_executor and hasattr(type(env), f"exec_{fn}"):
@@ -46,14 +49,19 @@ async def resolve_env_fn(env, value, fn, executor=None):
     return await eval_env_fn(fns, value)
 
 
-async def call_wrapped_async_reset(env, *args):
+async def call_wrapped_async_reset(env, executor):
     root_env = env
     while hasattr(root_env, "env"):
         root_env = root_env.env
-    result = await root_env.async_reset(*args)
+    result = await root_env.async_reset()
     if env != root_env:
         with patch.object(root_env, "reset", return_value=result) as mock_method:
-            result = env.reset(*args)
+            if hasattr(env, "exec_reset"):
+                result = await env.exec_reset(executor)
+                # contract violation, should shimmy up instead
+                result = env.receipt_factory(result)
+            else:
+                result = env.reset()
     return result
 
 
@@ -143,12 +151,15 @@ class AsyncioVectorEnv(VectorEnv):
     async def async_reset(self):
         self._dones[:] = False
         observations = await (
-            asyncio.gather(*[call_wrapped_async_reset(env) for env in self.envs])
+            asyncio.gather(
+                *[call_wrapped_async_reset(env, self.executor) for env in self.envs]
+            )
         )
 
         try:
             concatenate(observations, self.observations, self.single_observation_space)
         except ValueError:
+            print(observations)
             print([n.shape for n in observations])
             raise
 
@@ -210,7 +221,7 @@ class AsyncioVectorEnv(VectorEnv):
                 print("Error:", type(result), result, self.envs[i].task)
                 traceback.print_exception(type(result), result, result.__traceback__)
                 observation, self._rewards[i], self._dones[i], info = [
-                    call_wrapped_async_reset(env),
+                    call_wrapped_async_reset(env, self.exeuector),
                     0.0,
                     False,
                     {"bad_transition": True},

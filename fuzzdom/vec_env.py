@@ -263,6 +263,11 @@ class GraphGymWrapper(gym.Wrapper):
         obs = self.env.reset()
         return self.observation(obs)
 
+    async def exec_reset(self, executor):
+        self.prior_actions = []
+        obs = self.env.reset()
+        return await self.exec_observation(obs, executor)
+
 
 def mp_observation(pool, envs, obs):
     futs = [pool.apply_async(*env.mp_pre_observation(ov)) for env, ov in zip(envs, obs)]
