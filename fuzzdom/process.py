@@ -6,6 +6,7 @@ Adapted from: https://github.com/python/cpython/blob/master/Lib/concurrent/futur
 Python 3.7!
 """
 from concurrent.futures.process import *
+from multiprocessing.context import SpawnContext
 import torch.multiprocessing as mp
 from torch.multiprocessing.queue import Queue
 
@@ -32,7 +33,7 @@ class _PytorchSafeQueue(Queue):
 
 class PytorchProcessPoolExecutor(ProcessPoolExecutor):
     def __init__(self, *args, **kwargs):
-        kwargs["mp_context"] = mp
+        kwargs["mp_context"] = mp_context
         ProcessPoolExecutor.__init__(self, *args, **kwargs)
         queue_size = self._max_workers + EXTRA_QUEUED_CALLS
         self._call_queue = _PytorchSafeQueue(
@@ -40,3 +41,14 @@ class PytorchProcessPoolExecutor(ProcessPoolExecutor):
             ctx=self._mp_context,
             pending_work_items=self._pending_work_items,
         )
+
+
+class PytorchContext(SpawnContext):
+    def SimpleQueue(self):
+        return mp.SimpleQueue()
+
+    def Queue(self, maxsize=0):
+        return mp.Queue(maxsize, ctx=self.get_context())
+
+
+mp_context = PytorchContext()
