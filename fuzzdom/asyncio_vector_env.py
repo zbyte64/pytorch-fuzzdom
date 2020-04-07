@@ -1,36 +1,48 @@
 import numpy as np
 from copy import deepcopy
 import asyncio
-#from concurrent.futures import ProcessPoolExecutor
-from torch.multiprocessing import Pool
 
 import traceback
 from unittest.mock import patch
+import itertools
 
 from gym import logger
 from gym.vector.vector_env import VectorEnv
 from gym.vector.utils import concatenate, create_empty_array
 
+from .process import PytorchProcessPoolExecutor
 
-def get_env_fn(env, fn):
+
+def get_env_fn(env, fn, with_executor=False):
     fns = []
     while env:
-        if hasattr(type(env), fn):
-            fns.append(getattr(env, fn))
+        if with_executor and hasattr(type(env), f"exec_{fn}"):
+            fns.append(getattr(env, f"exec_{fn}"))
+        elif hasattr(type(env), fn):
+            fns.append(no_exec(getattr(env, fn)))
         env = getattr(env, "env", None)
     fns.reverse()
     return fns
 
 
-def eval_env_fn(fns, value):
+def no_exec(f):
+    async def ret(v, exec=None):
+        return f(v)
+
+    return ret
+
+
+async def eval_env_fn(fns, value, *args):
     for fn in fns:
-        value = fn(value)
+        value = await fn(value, *args)
     return value
 
 
-def resolve_env_fn(env, value, fn):
-    fns = get_env_fn(env, fn)
-    return eval_env_fn(fns, value)
+async def resolve_env_fn(env, value, fn, executor=None):
+    fns = get_env_fn(env, fn, with_executor=executor is not None)
+    if executor:
+        return await eval_env_fn(fns, value, executor)
+    return await eval_env_fn(fns, value)
 
 
 async def call_wrapped_async_reset(env, *args):
@@ -48,12 +60,12 @@ async def call_wrapped_async_step(env, action):
     root_env = env
     while hasattr(root_env, "env"):
         root_env = root_env.env
-    action = resolve_env_fn(env, action, "action")
+    action = await resolve_env_fn(env, action, "action")
     result = await root_env.async_step(action)
-    _ = resolve_env_fn(env, result, "step_result")
-    reward = resolve_env_fn(env, result[1], "reward")
-    #intensive serialization gets tasked out
-    #obs = await resolve_env_fn(env, result[0], "observation", executor)
+    _ = await resolve_env_fn(env, result, "step_result")
+    reward = await resolve_env_fn(env, result[1], "reward")
+    # intensive serialization gets tasked out
+    # obs = await resolve_env_fn(env, result[0], "observation", executor)
     return (result[0], reward, *result[2:])
 
 
@@ -100,8 +112,7 @@ class AsyncioVectorEnv(VectorEnv):
         self._actions = None
         self.closed = False
         self.loop = asyncio.get_event_loop()
-        self.pool = Pool(self.num_envs)
-        self.executor = None
+        self.executor = PytorchProcessPoolExecutor(self.num_envs)
 
     def seed(self, seeds=None):
         if seeds is None:
@@ -193,19 +204,12 @@ class AsyncioVectorEnv(VectorEnv):
         pass
 
     async def process_observations(self, observations):
-        #coroutines are resets
-        obs = [o for o in observations if not asyncio.iscoroutine(o)]
-        p = await (asyncio.gather(*[o for o in observations if asyncio.iscoroutine(o)]))
-        all_fns = map(lambda e: get_env_fn(e, "observation"), self.envs)
-        v_obs = tuple(map(lambda x: eval_env_fn(*x), zip(all_fns, obs)))
-        #v_obs = self.pool.map(eval_env_fn, zip(all_fns, obs))
-        k = j = 0
-        p_obs = []
-        for i, o in enumerate(observations):
-            if asyncio.iscoroutine(o):
-                p_obs.append(p[j])
-                j += 1
-            else:
-                p_obs.append(v_obs[k])
-                k += 1
-        return p_obs
+        # coroutines are resets
+        obs = map(
+            lambda x: x[0]
+            if asyncio.iscoroutine(x[0])
+            else resolve_env_fn(x[1], x[0], "observation", self.executor),
+            zip(observations, self.envs),
+        )
+        p = await asyncio.gather(*obs)
+        return p
