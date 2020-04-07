@@ -308,7 +308,7 @@ class MiniWoBGraphEnvironment(gym.Env):
 
     async def async_step(self, action) -> tuple:
         action_id, ref, value = action
-        assert ref in self.state.dom_graph
+        assert ref in self.state.dom_graph, str(ref)
         f = self._actions[action_id]
 
         start_time = time.time()

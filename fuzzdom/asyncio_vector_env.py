@@ -112,7 +112,7 @@ class AsyncioVectorEnv(VectorEnv):
         self._actions = None
         self.closed = False
         self.loop = asyncio.get_event_loop()
-        self.executor = PytorchProcessPoolExecutor(self.num_envs)
+        self.executor = PytorchProcessPoolExecutor(3)
 
     def seed(self, seeds=None):
         if seeds is None:
@@ -205,11 +205,21 @@ class AsyncioVectorEnv(VectorEnv):
 
     async def process_observations(self, observations):
         # coroutines are resets
-        obs = map(
-            lambda x: x[0]
-            if asyncio.iscoroutine(x[0])
-            else resolve_env_fn(x[1], x[0], "observation", self.executor),
-            zip(observations, self.envs),
-        )
-        p = await asyncio.gather(*obs)
-        return p
+        for tries_left in range(2, 0, -1):
+            obs = map(
+                lambda x: x[0]
+                if asyncio.iscoroutine(x[0])
+                else resolve_env_fn(x[1], x[0], "observation", self.executor),
+                zip(observations, self.envs),
+            )
+            from concurrent.futures.process import BrokenProcessPool
+            try:
+                p = await asyncio.gather(*obs)
+            except BrokenProcessPool as e:
+                print("Remote Cause:", getattr(e, "__cause__", ""))
+                self.executor.shutdown()
+                if tries_left:
+                    self.executor = PytorchProcessPoolExecutor(self.num_envs)
+                else:
+                    raise
+            return p
