@@ -10,6 +10,7 @@ from gym import logger
 from gym.vector.vector_env import VectorEnv
 from gym.vector.utils import concatenate, create_empty_array
 
+from torch import multiprocessing as mp
 from .process import PytorchProcessPoolExecutor
 
 
@@ -112,7 +113,7 @@ class AsyncioVectorEnv(VectorEnv):
         self._actions = None
         self.closed = False
         self.loop = asyncio.get_event_loop()
-        self.executor = PytorchProcessPoolExecutor(3)
+        self.executor = PytorchProcessPoolExecutor(mp.cpu_count())
 
     def seed(self, seeds=None):
         if seeds is None:
@@ -205,7 +206,7 @@ class AsyncioVectorEnv(VectorEnv):
 
     async def process_observations(self, observations):
         # coroutines are resets
-        for tries_left in range(2, 0, -1):
+        for tries_left in [0]:
             obs = map(
                 lambda x: x[0]
                 if asyncio.iscoroutine(x[0])
@@ -213,6 +214,7 @@ class AsyncioVectorEnv(VectorEnv):
                 zip(observations, self.envs),
             )
             from concurrent.futures.process import BrokenProcessPool
+
             try:
                 p = await asyncio.gather(*obs)
             except BrokenProcessPool as e:
