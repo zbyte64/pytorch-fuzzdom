@@ -90,7 +90,14 @@ class AsyncioVectorEnv(VectorEnv):
         observations.
     """
 
-    def __init__(self, envs, observation_space=None, action_space=None, copy=True):
+    def __init__(
+        self,
+        envs,
+        observation_space=None,
+        action_space=None,
+        copy=True,
+        do_observations=None,
+    ):
         self.envs = envs
         self.copy = copy
 
@@ -114,6 +121,7 @@ class AsyncioVectorEnv(VectorEnv):
         self.closed = False
         self.loop = asyncio.get_event_loop()
         self.executor = PytorchProcessPoolExecutor(mp.cpu_count())
+        self.do_observations = do_observations
 
     def seed(self, seeds=None):
         if seeds is None:
@@ -205,23 +213,46 @@ class AsyncioVectorEnv(VectorEnv):
         pass
 
     async def process_observations(self, observations):
-        # coroutines are resets
-        for tries_left in [0]:
+        # may contain coroutines from resets
+        if self.do_observations:
+            # do_observations takes on a task load of all obs to be transformed
+            col_tasks = tuple(
+                zip(
+                    *itertools.filterfalse(
+                        lambda x: asyncio.iscoroutine(x[1]),
+                        zip(self.envs, observations),
+                    )
+                )
+            )
+            if col_tasks:
+                obs = self.do_observations(*col_tasks)
+            else:
+                obs = []
+            r_obs = await asyncio.gather(*filter(asyncio.iscoroutine, observations))
+            p = []
+            i = j = 0
+            for k, o in enumerate(observations):
+                if asyncio.iscoroutine(o):
+                    p.append(r_obs[i])
+                    i += 1
+                else:
+                    p.append(obs[j])
+                    j += 1
+            return p
+        else:
+            from concurrent.futures.process import BrokenProcessPool
+
             obs = map(
                 lambda x: x[0]
                 if asyncio.iscoroutine(x[0])
                 else resolve_env_fn(x[1], x[0], "observation", self.executor),
                 zip(observations, self.envs),
             )
-            from concurrent.futures.process import BrokenProcessPool
 
             try:
                 p = await asyncio.gather(*obs)
             except BrokenProcessPool as e:
                 print("Remote Cause:", getattr(e, "__cause__", ""))
                 self.executor.shutdown()
-                if tries_left:
-                    self.executor = PytorchProcessPoolExecutor(self.num_envs)
-                else:
-                    raise
+                raise
             return p
