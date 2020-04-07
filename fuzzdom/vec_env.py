@@ -266,7 +266,7 @@ class GraphGymWrapper(gym.Wrapper):
 
 def mp_observation(pool, envs, obs):
     futs = [pool.apply_async(*env.mp_pre_observation(ov)) for env, ov in zip(envs, obs)]
-    _obs = [f.get() for f in futs]
+    _obs = [f.get(timeout=15) for f in futs]
     _obs = [env.mp_post_observation(o) for env, o in zip(envs, _obs)]
     return [env.receipt_factory(o) for env, o in zip(envs, _obs)]
 

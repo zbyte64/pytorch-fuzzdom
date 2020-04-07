@@ -158,7 +158,40 @@ class AsyncioVectorEnv(VectorEnv):
         self._original_actions = actions
 
     def step_wait(self):
-        return self.loop.run_until_complete(self.async_step(self._original_actions))
+        observations, infos = self.loop.run_until_complete(
+            self.async_step(self._original_actions)
+        )
+        if self.do_observations:
+            # do_observations takes on a task load of all obs to be transformed
+            # assumes that an integer is the final result
+            col_tasks = tuple(
+                zip(
+                    *itertools.filterfalse(
+                        lambda x: isinstance(x[1], int), zip(self.envs, observations)
+                    )
+                )
+            )
+            if col_tasks:
+                obs = self.do_observations(*col_tasks)
+            else:
+                obs = []
+            p = []
+            j = 0
+            for k, o in enumerate(observations):
+                if isinstance(o, int):
+                    p.append(o)
+                else:
+                    p.append(obs[j])
+                    j += 1
+            observations = p
+        concatenate(observations, self.observations, self.single_observation_space)
+
+        return (
+            deepcopy(self.observations) if self.copy else self.observations,
+            np.copy(self._rewards),
+            np.copy(self._dones),
+            infos,
+        )
 
     async def async_step(self, actions):
         observations, infos = [], []
@@ -187,14 +220,7 @@ class AsyncioVectorEnv(VectorEnv):
             observations.append(observation)
             infos.append(info)
         observations = await self.process_observations(observations)
-        concatenate(observations, self.observations, self.single_observation_space)
-
-        return (
-            deepcopy(self.observations) if self.copy else self.observations,
-            np.copy(self._rewards),
-            np.copy(self._dones),
-            infos,
-        )
+        return observations, infos
 
     def close(self, terminate=False):
         if self.closed:
@@ -216,28 +242,15 @@ class AsyncioVectorEnv(VectorEnv):
         # may contain coroutines from resets
         if self.do_observations:
             # do_observations takes on a task load of all obs to be transformed
-            col_tasks = tuple(
-                zip(
-                    *itertools.filterfalse(
-                        lambda x: asyncio.iscoroutine(x[1]),
-                        zip(self.envs, observations),
-                    )
-                )
-            )
-            if col_tasks:
-                obs = self.do_observations(*col_tasks)
-            else:
-                obs = []
             r_obs = await asyncio.gather(*filter(asyncio.iscoroutine, observations))
             p = []
-            i = j = 0
+            i = 0
             for k, o in enumerate(observations):
                 if asyncio.iscoroutine(o):
                     p.append(r_obs[i])
                     i += 1
                 else:
-                    p.append(obs[j])
-                    j += 1
+                    p.append(o)
             return p
         else:
             from concurrent.futures.process import BrokenProcessPool
