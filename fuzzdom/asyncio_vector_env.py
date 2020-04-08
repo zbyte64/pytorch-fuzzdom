@@ -65,17 +65,17 @@ async def call_wrapped_async_reset(env, executor):
     return result
 
 
-async def call_wrapped_async_step(env, action):
+async def call_wrapped_async_step(env, action, executor):
     root_env = env
     while hasattr(root_env, "env"):
         root_env = root_env.env
-    action = await resolve_env_fn(env, action, "action")
+    action = await resolve_env_fn(env, action, "action", executor)
     result = await root_env.async_step(action)
-    _ = await resolve_env_fn(env, result, "step_result")
-    reward = await resolve_env_fn(env, result[1], "reward")
+    _ = await resolve_env_fn(env, result, "step_result", executor)
+    reward = await resolve_env_fn(env, result[1], "reward", executor)
     # intensive serialization gets tasked out
-    # obs = await resolve_env_fn(env, result[0], "observation", executor)
-    return (result[0], reward, *result[2:])
+    obs = await resolve_env_fn(env, result[0], "observation", executor)
+    return (obs, reward, *result[2:])
 
 
 class AsyncioVectorEnv(VectorEnv):
@@ -99,12 +99,7 @@ class AsyncioVectorEnv(VectorEnv):
     """
 
     def __init__(
-        self,
-        envs,
-        observation_space=None,
-        action_space=None,
-        copy=True,
-        do_observations=None,
+        self, envs, observation_space=None, action_space=None, copy=True, timeout=2.0
     ):
         self.envs = envs
         self.copy = copy
@@ -129,7 +124,7 @@ class AsyncioVectorEnv(VectorEnv):
         self.closed = False
         self.loop = asyncio.get_event_loop()
         self.executor = PytorchProcessPoolExecutor(mp.cpu_count())
-        self.do_observations = do_observations
+        self._timeout = timeout
 
     def seed(self, seeds=None):
         if seeds is None:
@@ -172,30 +167,11 @@ class AsyncioVectorEnv(VectorEnv):
         observations, infos = self.loop.run_until_complete(
             self.async_step(self._original_actions)
         )
-        if self.do_observations:
-            # do_observations takes on a task load of all obs to be transformed
-            # assumes that an integer is the final result
-            col_tasks = tuple(
-                zip(
-                    *itertools.filterfalse(
-                        lambda x: isinstance(x[1], int), zip(self.envs, observations)
-                    )
-                )
-            )
-            if col_tasks:
-                obs = self.do_observations(*col_tasks)
-            else:
-                obs = []
-            p = []
-            j = 0
-            for k, o in enumerate(observations):
-                if isinstance(o, int):
-                    p.append(o)
-                else:
-                    p.append(obs[j])
-                    j += 1
-            observations = p
-        concatenate(observations, self.observations, self.single_observation_space)
+        try:
+            concatenate(observations, self.observations, self.single_observation_space)
+        except ValueError:
+            print(observations)
+            raise
 
         return (
             deepcopy(self.observations) if self.copy else self.observations,
@@ -209,7 +185,10 @@ class AsyncioVectorEnv(VectorEnv):
         p = await (
             asyncio.gather(
                 *[
-                    asyncio.wait_for(call_wrapped_async_step(env, action), timeout=1.0)
+                    asyncio.wait_for(
+                        call_wrapped_async_step(env, action, self.executor),
+                        timeout=self._timeout,
+                    )
                     for env, action in zip(self.envs, actions)
                 ],
                 return_exceptions=True,
@@ -221,7 +200,7 @@ class AsyncioVectorEnv(VectorEnv):
                 print("Error:", type(result), result, self.envs[i].task)
                 traceback.print_exception(type(result), result, result.__traceback__)
                 observation, self._rewards[i], self._dones[i], info = [
-                    call_wrapped_async_reset(env, self.exeuector),
+                    call_wrapped_async_reset(env, self.executor),
                     0.0,
                     False,
                     {"bad_transition": True},
@@ -240,7 +219,7 @@ class AsyncioVectorEnv(VectorEnv):
             self.viewer.close()
         self.loop.run_until_complete(
             asyncio.gather(
-                *[asyncio.wait_for(env.close(), 1.0) for env in self.envs],
+                *[asyncio.wait_for(env.close(), self._timeout) for env in self.envs],
                 return_exceptions=True,
             )
         )
@@ -251,34 +230,16 @@ class AsyncioVectorEnv(VectorEnv):
 
     async def process_observations(self, observations):
         # may contain coroutines from resets
-        if self.do_observations:
-            # do_observations takes on a task load of all obs to be transformed
-            r_obs = await asyncio.gather(*filter(asyncio.iscoroutine, observations))
-            p = []
-            i = 0
-            for k, o in enumerate(observations):
-                if asyncio.iscoroutine(o):
-                    p.append(r_obs[i])
-                    i += 1
-                else:
-                    p.append(o)
-            return p
-        else:
-            from concurrent.futures.process import BrokenProcessPool
+        obs = list(filter(asyncio.iscoroutine, observations))
+        if obs:
+            obs = await asyncio.gather(*obs)
 
-            obs = map(
-                lambda x: x[0]
-                if asyncio.iscoroutine(x[0])
-                else asyncio.wait_for(
-                    resolve_env_fn(x[1], x[0], "observation", self.executor), 15.0
-                ),
-                zip(observations, self.envs),
-            )
-
-            try:
-                p = await asyncio.gather(*obs)
-            except BrokenProcessPool as e:
-                print("Remote Cause:", getattr(e, "__cause__", ""))
-                self.executor.shutdown()
-                raise
-            return p
+        p = []
+        i = 0
+        for o in observations:
+            if asyncio.iscoroutine(o):
+                p.append(obs[i])
+                i += 1
+            else:
+                p.append(o)
+        return p

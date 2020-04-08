@@ -228,25 +228,14 @@ class GraphGymWrapper(gym.Wrapper):
         return obs
 
     async def exec_observation(self, obs, executor):
-        # TODO depends on pytorch support for asyncio
         assert isinstance(obs, MiniWoBGraphState), str(type(obs))
-        # obs_fut = executor.submit(state_to_vector, obs, self.prior_actions)
         loop = asyncio.get_event_loop()
         v_obs = await loop.run_in_executor(
             executor, state_to_vector, obs, self.prior_actions
         )
-        # v_obs = await asyncio.wrap_future(obs_fut)
         self.last_observation = v_obs
         self.last_state = obs
         return v_obs
-
-    def mp_pre_observation(self, obs):
-        self.last_state = obs
-        return (state_to_vector, (obs, self.prior_actions))
-
-    def mp_post_observation(self, obs):
-        self.last_observation = obs
-        return obs
 
     def step(self, action):
         observation, reward, done, info = self.env.step(self.action(action))
@@ -269,28 +258,14 @@ class GraphGymWrapper(gym.Wrapper):
         return await self.exec_observation(obs, executor)
 
 
-def mp_observation(pool, envs, obs):
-    futs = [pool.apply_async(*env.mp_pre_observation(ov)) for env, ov in zip(envs, obs)]
-    _obs = [f.get(timeout=15) for f in futs]
-    _obs = [env.mp_post_observation(o) for env, o in zip(envs, _obs)]
-    return [env.receipt_factory(o) for env, o in zip(envs, _obs)]
-
-
 def make_vec_envs(envs, receipts):
     from .asyncio_vector_env import AsyncioVectorEnv
-
-    from torch.multiprocessing import Pool, cpu_count
-
-    # from multiprocessing import Pool, cpu_count
-    from functools import partial
-
-    # p = Pool(cpu_count())
 
     envs = [
         ReceiptsGymWrapper(GraphGymWrapper(env), receipt_factory=receipts)
         for env in envs
     ]
-    vec_env = AsyncioVectorEnv(envs)  # , do_observations=partial(mp_observation, p))
+    vec_env = AsyncioVectorEnv(envs)
     vec_env.observations = np.zeros((len(envs), 1), dtype=np.int32) - 1
     vec_env.action_space = gym.spaces.Discrete(1)
     return vec_env

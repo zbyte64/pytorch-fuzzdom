@@ -324,7 +324,7 @@ class MiniWoBGraphEnvironment(gym.Env):
                     print("Node was found!", ref)
                 raise
         # wait for an amount of time but take into account future js execution time
-        wait_time = max(self.wait_ms / 1000 - (time.time() - start_time) * 2, 0)
+        wait_time = 0  # max(self.wait_ms / 1000 - (time.time() - start_time) * 2, 0)
         if wait_time:
             await asyncio.sleep(wait_time)
         await self.refresh_state()
@@ -343,7 +343,7 @@ class MiniWoBGraphEnvironment(gym.Env):
             metadata["episode"] = {"r": r}
         else:
             # wait for any remaining amount of time
-            wait_time = max(self.wait_ms / 1000 - time.time() - start_time, 0)
+            wait_time = 0  # max(self.wait_ms / 1000 - time.time() - start_time, 0)
             if wait_time:
                 await asyncio.sleep(wait_time)
 
