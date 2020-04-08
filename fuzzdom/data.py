@@ -1,6 +1,7 @@
 import torch
 import networkx as nx
 import itertools
+from collections import defaultdict
 from torch_geometric.utils import from_networkx as _from_networkx
 from torch_geometric.data import Batch, Data
 
@@ -53,7 +54,7 @@ def vectorize_projections(
     t_edge_index = torch.tensor(list(source.edges)).t().contiguous()
     num_nodes = source.number_of_nodes()
 
-    data = {}
+    data = defaultdict(list)
     edges = []
     index = -1
     # precompute key strings
@@ -63,7 +64,6 @@ def vectorize_projections(
         {
             "sp_domain_index": f"{source_domain}_{p_domain}_index",
             "p_domain_index": f"{p_domain}_index",
-            "p_domain_value": f"{p_domain}_value",
         }
         for p_domain in proj_domains
     ]
@@ -76,16 +76,17 @@ def vectorize_projections(
         for u, src_node in source.nodes(data=True):
             index += 1
             node_index = src_node["index"]
-            node = {"index": index, final_domain_key: k, source_domain_key: node_index}
+            data["index"].append(index)
+            data[final_domain_key].append(k)
+            data[source_domain_key].append(node_index)
+
             for keys, (proj_index, proj_value) in zip(sp_keys, p):
-                node[keys["sp_domain_index"]] = (proj_index + 1) * (node_index + 1) - 1
-                node[keys["p_domain_index"]] = proj_index
-                if isinstance(proj_value, dict):
-                    node.update(proj_value)
-                elif proj_value is not None:
-                    node[keys["p_domain_value"]] = proj_value
-            for key, value in node.items():
-                data[key] = [value] if index == 0 else data[key] + [value]
+                data[keys["sp_domain_index"]].append(
+                    (proj_index + 1) * (node_index + 1) - 1
+                )
+                data[keys["p_domain_index"]].append(proj_index)
+                for key, value in proj_value.items():
+                    data[key].append(value)
 
     for key, item in data.items():
         try:

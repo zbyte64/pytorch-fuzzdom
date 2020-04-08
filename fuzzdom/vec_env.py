@@ -35,7 +35,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
     fields_projection_data = vectorize_projections(
-        {"field": list(range(len(e_fields.nodes)))},
+        {"field": list({"field_idx": i} for i in range(len(e_fields.nodes)))},
         e_dom,
         source_domain="dom",
         final_domain="dom_field",
@@ -126,7 +126,7 @@ def project_dom_leaves(source: nx.DiGraph):
     t_edge_index = torch.tensor(list(source.edges)).t().contiguous()
     num_nodes = source.number_of_nodes()
 
-    data = {}
+    data = defaultdict(list)
     edges = []
     index = -1
 
@@ -136,17 +136,15 @@ def project_dom_leaves(source: nx.DiGraph):
         for u, src_node in source.nodes(data=True):
             index += 1
             node_index = src_node["index"]
-            node = {
-                "index": index,
-                "leaf_index": k,
-                "mask": (1,) if u == k else (0,),
-                "dom_idx": src_node["dom_idx"],
-                "dom_index": node_index,
-                "origin_length": (0.0,),
-                "action_lenth": (0.0,),  # nx.shortest_path_length(dom_graph, k, u),
-            }
-            for key, value in node.items():
-                data[key] = [value] if index == 0 else data[key] + [value]
+            data["index"].append(node_index)
+            data["leaf_index"].append(k)
+            data["mask"].append((1,) if u == k else (0,))
+            data["dom_idx"].append(src_node["dom_idx"])
+            data["dom_index"].append(node_index)
+            data["origin_length"].append((0.0,))
+            data["action_lenth"].append(
+                (0.0,)
+            )  # nx.shortest_path_length(dom_graph, k, u)
 
     for key, item in data.items():
         try:
