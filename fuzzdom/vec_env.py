@@ -1,3 +1,4 @@
+import torch
 from torch_geometric.transforms import Distance
 from torch_geometric.data import Data, Batch
 import gym
@@ -8,7 +9,7 @@ import asyncio
 
 from .domx import short_embed
 from .state import MiniWoBGraphState
-from .data import vectorize_projections, from_networkx
+from .data import vectorize_projections, from_networkx, SubData
 
 
 def minmax_scale(x, min, max):
@@ -39,7 +40,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
         source_domain="dom",
         final_domain="dom_field",
     )
-    e_leaves, leaves = encode_dom_leaves(e_dom)
+    leaves_data, leaves = project_dom_leaves(e_dom)
     actions_data = vectorize_projections(
         {
             "ux_action": [
@@ -54,9 +55,6 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     )
     e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
-    leaves_data = from_networkx(
-        e_leaves, dom_index=dom_data.num_nodes, leaf_index=len(e_leaves)
-    )
     history_data = from_networkx(
         e_history,
         ux_action_index=4,
@@ -113,28 +111,53 @@ def encode_prior_actions(dom_graph: nx.DiGraph, prior_actions: [], fields):
     return history
 
 
-def encode_dom_leaves(dom_graph: nx.DiGraph):
+def project_dom_leaves(source: nx.DiGraph):
     """
     For each leaf node we create a new graph with distances relative to the leaf
     and the values are replaced with a mask
+
+    Also creates indexes:
+
+    * dom_index (per source node)
+    * leaf_index (per leaf)
     """
-    pa = nx.DiGraph()
-    leaves = list(filter(lambda n: dom_graph.out_degree(n) == 0, dom_graph.nodes))
-    for i, k in enumerate(leaves):
-        for u, dom_node in dom_graph.nodes(data=True):
+    leaves = list(filter(lambda n: source.out_degree(n) == 0, source.nodes))
+
+    t_edge_index = torch.tensor(list(source.edges)).t().contiguous()
+    num_nodes = source.number_of_nodes()
+
+    data = {}
+    edges = []
+    index = -1
+
+    for k, p in enumerate(leaves):
+        k_edge_index = t_edge_index + k * num_nodes
+        edges.append(k_edge_index)
+        for u, src_node in source.nodes(data=True):
+            index += 1
+            node_index = src_node["index"]
             node = {
-                "index": pa.number_of_nodes(),
-                "leaf_index": i,
+                "index": index,
+                "leaf_index": k,
                 "mask": (1,) if u == k else (0,),
-                "dom_idx": dom_node["dom_idx"],
-                "dom_index": dom_node["dom_idx"],
+                "dom_idx": src_node["dom_idx"],
+                "dom_index": node_index,
                 "origin_length": (0.0,),
                 "action_lenth": (0.0,),  # nx.shortest_path_length(dom_graph, k, u),
             }
-            pa.add_node(f"{k}-{u}", **node)
-            for (_u, v) in filter(lambda y: y[0] == u, dom_graph.edges(u)):
-                pa.add_edge(f"{k}-{u}", f"{k}-{v}")
-    return pa, leaves
+            for key, value in node.items():
+                data[key] = [value] if index == 0 else data[key] + [value]
+
+    for key, item in data.items():
+        try:
+            data[key] = torch.tensor(item)
+        except ValueError:
+            pass
+
+    data["edge_index"] = torch.cat(edges).view(2, -1)
+    data = SubData(data, dom_index=num_nodes, leaf_index=len(leaves))
+    data.num_nodes = num_nodes * len(leaves)
+    return data, leaves
 
 
 def encode_dom_graph(g: nx.DiGraph, encode_with=None):

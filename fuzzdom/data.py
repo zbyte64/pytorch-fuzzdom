@@ -105,45 +105,6 @@ def vectorize_projections(
     return data
 
 
-def encode_projections(
-    projections: dict, source: nx.DiGraph, source_domain: str, final_domain: str
-):
-    """
-    Encodes a new instance of `source` for each entry in `projections`
-
-    projections: {proj_domain0: [items], proj_domain1: [items]...}
-    """
-    index = -1
-    dst = nx.DiGraph()
-    proj_domains = list(projections.keys())
-    combinations = list(itertools.product(*map(enumerate, projections.values())))
-    for k, p in enumerate(combinations):
-        # value w/ enum: [ (0, x0), (1, x1) ]
-        # p: [(proj_index_0, proj_value_0), ...]
-        for u, src_node in source.nodes(data=True):
-            index += 1
-            node_index = src_node["index"]
-            node = {
-                "index": index,
-                f"{final_domain}_index": k,
-                f"{source_domain}_index": node_index,
-            }
-            for src_index, (proj_index, proj_value) in enumerate(p):
-                p_domain = proj_domains[src_index]
-                node[f"{source_domain}_{p_domain}_index"] = (proj_index + 1) * (
-                    node_index + 1
-                ) - 1
-                node[f"{p_domain}_index"] = proj_index
-                if isinstance(proj_value, dict):
-                    node.update(proj_value)
-                elif proj_value is not None:
-                    node[f"{p_domain}_value"] = proj_value
-            dst.add_node(f"{k}-{u}", **node)
-            for (_u, v) in filter(lambda y: y[0] == u, source.edges(u)):
-                dst.add_edge(f"{k}-{u}", f"{k}-{v}")
-    return dst, combinations
-
-
 class TupleBatch:
     @staticmethod
     def from_data_list(data_list):
