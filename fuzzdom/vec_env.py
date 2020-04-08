@@ -26,7 +26,7 @@ def tuplize(f):
 
 
 def one_hot(i, k):
-    oh = np.zeros((k,), np.float32)
+    oh = torch.zeros((k,), dtype=torch.float32)
     oh[i] = 1
     return oh
 
@@ -47,7 +47,10 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
                 {"action_idx": i, "action_one_hot": one_hot(i, 5)} for i in range(4)
             ],
             "field": [{"field_idx": i} for i in e_fields.nodes],
-            "leaf": [{"dom_idx": e_dom.nodes[i]["dom_idx"]} for i in leaves],
+            "leaf": [
+                {"dom_idx": torch.tensor(e_dom.nodes[i]["dom_idx"], dtype=torch.int64)}
+                for i in leaves
+            ],
         },
         e_dom,
         source_domain="dom",

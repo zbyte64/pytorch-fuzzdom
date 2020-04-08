@@ -53,10 +53,20 @@ def vectorize_projections(
     combinations = list(itertools.product(*map(enumerate, projections.values())))
     t_edge_index = torch.tensor(list(source.edges)).t().contiguous()
     num_nodes = source.number_of_nodes()
+    final_size = len(combinations) * num_nodes
 
-    data = defaultdict(list)
-    edges = []
-    index = -1
+    data = {
+        col: torch.zeros((final_size, *v.size()), dtype=v.dtype)
+        for k, nodes in projections.items()
+        for col, v in map(
+            lambda x: (
+                x[0],
+                x[1] if isinstance(x[1], torch.Tensor) else torch.tensor(x[1]),
+            ),
+            nodes[0].items(),
+        )
+    }
+
     # precompute key strings
     final_domain_key = f"{final_domain}_index"
     source_domain_key = f"{source_domain}_index"
@@ -67,6 +77,22 @@ def vectorize_projections(
         }
         for p_domain in proj_domains
     ]
+    data.update(
+        {
+            "index": torch.zeros((final_size,), dtype=torch.int64),
+            final_domain_key: torch.zeros((final_size,), dtype=torch.int64),
+            source_domain_key: torch.zeros((final_size,), dtype=torch.int64),
+        }
+    )
+    data.update(
+        {
+            k: torch.zeros((final_size,), dtype=torch.int64)
+            for sp in sp_keys
+            for k in sp.values()
+        }
+    )
+    edges = []
+    index = -1
 
     for k, p in enumerate(combinations):
         # value w/ enum: [ (0, x0), (1, x1) ]
@@ -76,23 +102,17 @@ def vectorize_projections(
         for u, src_node in source.nodes(data=True):
             index += 1
             node_index = src_node["index"]
-            data["index"].append(index)
-            data[final_domain_key].append(k)
-            data[source_domain_key].append(node_index)
+            data["index"][index] = index
+            data[final_domain_key][index] = k
+            data[source_domain_key][index] = node_index
 
             for keys, (proj_index, proj_value) in zip(sp_keys, p):
-                data[keys["sp_domain_index"]].append(
-                    (proj_index + 1) * (node_index + 1) - 1
-                )
-                data[keys["p_domain_index"]].append(proj_index)
+                data[keys["sp_domain_index"]][index] = (proj_index + 1) * (
+                    node_index + 1
+                ) - 1
+                data[keys["p_domain_index"]][index] = proj_index
                 for key, value in proj_value.items():
-                    data[key].append(value)
-
-    for key, item in data.items():
-        try:
-            data[key] = torch.tensor(item)
-        except ValueError:
-            pass
+                    data[key][index] = value
 
     data["edge_index"] = torch.cat(edges).view(2, -1)
 
@@ -101,12 +121,12 @@ def vectorize_projections(
         for keys, (p_domain, entries) in zip(sp_keys, projections.items())
     }
     indexes[final_domain_key] = len(combinations)
-    indexes[source_domain_key] = source.number_of_nodes()
+    indexes[source_domain_key] = num_nodes
     for keys, (p_domain, p_values) in zip(sp_keys, projections.items()):
         indexes[keys["sp_domain_index"]] = num_nodes * len(p_values)
 
     data = SubData(data, **indexes)
-    data.num_nodes = num_nodes * len(combinations)
+    data.num_nodes = final_size
     return data
 
 
