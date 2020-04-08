@@ -144,7 +144,7 @@ class GNNBase(NNBase):
             [
                 x[leaves.dom_index],
                 leaves.origin_length,
-                leaves.action_lenth,
+                leaves.action_length,
                 leaves.mask.type(torch.float),
             ],
             dim=1,
