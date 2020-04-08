@@ -33,14 +33,14 @@ def one_hot(i, k):
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
-    fields_projection_data, _ = vectorize_projections(
+    fields_projection_data = vectorize_projections(
         {"field": list(range(len(e_fields.nodes)))},
         e_dom,
         source_domain="dom",
         final_domain="dom_field",
     )
     e_leaves, leaves = encode_dom_leaves(e_dom)
-    actions_data, _ = vectorize_projections(
+    actions_data = vectorize_projections(
         {
             "ux_action": [
                 {"action_idx": i, "action_one_hot": one_hot(i, 5)} for i in range(4)
