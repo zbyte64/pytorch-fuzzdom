@@ -151,6 +151,10 @@ def main():
     rollouts.obs[0].copy_(torch.tensor(obs))
     rollouts.to(device)
 
+    # tensorboard_writer.add_graph(
+    #    actor_critic.base, (receipts.redeem(torch.tensor(obs)), None, None)
+    # )
+
     start = time.time()
     num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
     print("Iterations:", num_updates, args.num_steps)
@@ -178,7 +182,12 @@ def main():
         for step in range(args.num_steps):
             # Sample actions
             with torch.no_grad():
-                value, action, action_log_prob, recurrent_hidden_states = actor_critic.act(
+                (
+                    value,
+                    action,
+                    action_log_prob,
+                    recurrent_hidden_states,
+                ) = actor_critic.act(
                     receipts.redeem(rollouts.obs[step]),
                     rollouts.recurrent_hidden_states[step],
                     rollouts.masks[step],
@@ -285,9 +294,9 @@ def main():
                     np.median(episode_rewards),
                     np.min(episode_rewards),
                     np.max(episode_rewards),
-                    dist_entropy,
-                    value_loss,
-                    action_loss,
+                    # dist_entropy,
+                    # value_loss,
+                    # action_loss,
                 )
             )
 
@@ -299,17 +308,21 @@ def main():
             #    "task_ranks", torch.tensor(predictor._difficulty_rank), total_num_steps
             # )
             tensorboard_writer.add_histogram("value", value, total_num_steps)
-            """
             tensorboard_writer.add_histogram(
                 "x", actor_critic.base.last_x, total_num_steps
             )
             tensorboard_writer.add_histogram(
-                "query", actor_critic.base.last_query, total_num_steps
+                "x_actions", actor_critic.base.last_x_actions, total_num_steps
             )
             tensorboard_writer.add_histogram(
-                "inputs_at", actor_critic.base.last_inputs_at, total_num_steps
+                "x_att", actor_critic.base.last_x_att, total_num_steps
             )
-            """
+            tensorboard_writer.add_histogram(
+                "action_votes", actor_critic.base.last_action_votes, total_num_steps
+            )
+            tensorboard_writer.add_histogram(
+                "critic_x", actor_critic.base.last_critic_x, total_num_steps
+            )
 
             tensorboard_writer.add_scalar(
                 "mean_reward", np.mean(episode_rewards), total_num_steps
@@ -324,7 +337,9 @@ def main():
                 "max_reward", np.max(episode_rewards), total_num_steps
             )
             tensorboard_writer.add_scalar("dist_entropy", dist_entropy, total_num_steps)
+            # critic loss
             tensorboard_writer.add_scalar("value_loss", value_loss, total_num_steps)
+            # actor loss
             tensorboard_writer.add_scalar("action_loss", action_loss, total_num_steps)
 
         if (

@@ -2,10 +2,15 @@ import torch
 from torch import nn
 from torch_geometric.nn import (
     SAGEConv,
+    GraphConv,
     global_max_pool,
     global_add_pool,
     GlobalAttention,
     GCNConv,
+    AGNNConv,
+    GATConv,
+    ARMAConv,
+    SGConv,
     global_mean_pool,
 )
 import torch.nn.functional as F
@@ -24,7 +29,9 @@ class GNNBase(NNBase):
         hidden_size=64,
         text_embed_size=25,
     ):
-        super(GNNBase, self).__init__(recurrent, hidden_size, hidden_size)
+        super(GNNBase, self).__init__(
+            recurrent, hidden_size, hidden_size,
+        )
         self.hidden_size = hidden_size
         init_t = lambda m: init(
             m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0), 2 ** 0.5
@@ -35,35 +42,45 @@ class GNNBase(NNBase):
             lambda x: nn.init.constant_(x, 0),
             nn.init.calculate_gain("relu"),
         )
-
-        self.dom_encoder = dom_encoder
-
-        query_input_dim = 6 + 2 * 5
-        if dom_encoder:
-            query_input_dim += dom_encoder.out_channels
-        self.attr_norm = nn.BatchNorm1d(text_embed_size)
-
-        assert hidden_size > query_input_dim + 16
-        self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
-
-        self.history_att_conv = SAGEConv(5, 1)
-        self.dom_att_conv = SAGEConv(hidden_size + 3, 1)
-        self.objective_att_query = init_t(nn.Linear(text_embed_size * 2, hidden_size))
-        self.objective_att_conv = SAGEConv(hidden_size * 2 + 1, hidden_size)
-        self.actions_conv = SAGEConv(hidden_size * 2 + 5, hidden_size)
-
-        self.dom_tag = nn.Sequential(init_t(nn.Linear(text_embed_size, 5)), nn.Tanh())
-        self.dom_classes = nn.Sequential(
-            init_t(nn.Linear(text_embed_size, 5)), nn.Tanh()
-        )
-        self.actor_gate = nn.Sequential(init_r(nn.Linear(hidden_size, 1)), nn.ReLU())
-        self.critic_add_gate = nn.Sequential(
-            init_t(nn.Linear(hidden_size * 2, hidden_size)), nn.Tanh()
-        )
-
         init_ = lambda m: init(
             m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0)
         )
+
+        self.dom_encoder = dom_encoder
+
+        dom_attr_size = 5
+        action_one_hot_size = 5
+        query_input_dim = 6 + 2 * dom_attr_size
+        if dom_encoder:
+            query_input_dim += dom_encoder.out_channels
+        self.attr_norm = nn.BatchNorm1d(text_embed_size)
+        self.global_conv = GCNConv(query_input_dim, hidden_size - query_input_dim)
+
+        # self.history_att_conv = graph_conv(5, 1)
+        self.leaves_att_conv = SAGEConv(hidden_size + 3, 1)
+        # objective pos + attr similarities
+        dom_objective_size = hidden_size + 1 + 8
+        self.objective_att_conv = SAGEConv(dom_objective_size, 1)
+
+        self.dom_tag = nn.Sequential(
+            init_t(nn.Linear(text_embed_size, dom_attr_size)), nn.Tanh()
+        )
+        self.dom_classes = nn.Sequential(
+            init_t(nn.Linear(text_embed_size, dom_attr_size)), nn.Tanh()
+        )
+        self.query_key_ux_action_att = init_(
+            nn.Linear(text_embed_size, action_one_hot_size)
+        )
+        self.leaf_ux_action_att = SAGEConv(hidden_size + 3, action_one_hot_size)
+        self.order_bias_w = nn.Parameter(torch.tensor(1.0))
+
+        # multiplied and maxpooled to become our actor gate(objective, leaves)
+        self.actor_conv_objective = AGNNConv()
+        self.actor_conv_leaf = AGNNConv()
+        self.critic_ap_conv = SAGEConv(dom_objective_size, hidden_size)
+        self.critic_mp_conv = SAGEConv(dom_objective_size, hidden_size)
+        self.critic_ap_norm = nn.BatchNorm1d(hidden_size)
+
         self.critic_linear = init_(nn.Linear(hidden_size * 2, 1))
 
         self.train()
@@ -114,8 +131,8 @@ class GNNBase(NNBase):
             )
             x = torch.cat([x, _add_x], dim=1)
 
-        global_add_x = self.global_conv(x, dom.edge_index)
-        x = torch.cat([x, global_add_x], dim=1)
+        _add_x = torch.relu(self.global_conv(x, dom.edge_index))
+        x = torch.cat([x, _add_x], dim=1)
 
         if False and history.num_nodes:
             # process history into seperate attention scores and cast onto final action graph
@@ -138,8 +155,7 @@ class GNNBase(NNBase):
             history_att_ux = 1
             history_att_obj = 1
 
-        # conv over dom+actions to produce action attention mask
-        x_actions = x[actions.dom_index]
+        # leaves are targetable elements
         x_leaves = torch.cat(
             [
                 x[leaves.dom_index],
@@ -149,71 +165,103 @@ class GNNBase(NNBase):
             ],
             dim=1,
         )
-
-        leaves_att_raw = self.dom_att_conv(x_leaves, leaves.edge_index)
-
+        # compute a leaf dependent dom attention mask to indicate relevent nodes
+        leaves_att_raw = self.leaves_att_conv(x_leaves, leaves.edge_index)
         leaves_att = softmax(leaves_att_raw, leaves.leaf_index)
-        x_actions = x_actions * leaves_att[actions.dom_leaf_index] * history_att_dom
+        # infer action from leaf
+        leaf_ux_action_att = F.softmax(
+            global_max_pool(
+                self.leaf_ux_action_att(x_leaves * leaves_att, leaves.edge_index),
+                leaves.leaf_index,
+            ),
+            dim=1,
+        ).view(-1, 1)[leaves.leaf_index]
 
-        objective_att = self.objective_att_query(
-            torch.cat([objectives.key, objectives.query], dim=1)
-        )
-        x_obj = torch.cat(
+        # compute an objective dependent dom attention mask
+        # start with word embedding similarities
+        obj_sim = lambda tag, obj: F.cosine_similarity(
+            dom[tag][objectives_projection.dom_index],
+            objectives[obj][objectives_projection.field_index],
+        ).view(-1, 1)
+        x_obj_input = torch.cat(
             [
                 x[objectives_projection.dom_index],
+                obj_sim("text", "key"),
+                obj_sim("text", "query"),
+                obj_sim("value", "key"),
+                obj_sim("value", "query"),
+                obj_sim("tag", "key"),
+                obj_sim("tag", "query"),
+                obj_sim("classes", "key"),
+                obj_sim("classes", "query"),
                 objectives.order[objectives_projection.field_index],
-                objective_att[objectives_projection.field_index],
             ],
             dim=1,
         )
-        x_obj = self.objective_att_conv(x_obj, objectives_projection.edge_index)
+        x_obj = self.objective_att_conv(x_obj_input, objectives_projection.edge_index)
+        x_obj_att = torch.relu(
+            x_obj
+        )  # softmax(x_obj, objectives_projection.field_index)
+        # infer action from query key
+        obj_ux_action_att = F.softmax(
+            self.query_key_ux_action_att(self.attr_norm(objectives.key)), dim=1
+        ).view(-1, 1)
 
-        x_actions = (
-            x_actions
-            * x_obj[objectives_projection.dom_index[actions.dom_field_index]]
-            * history_att_obj
-        )
-        x_actions = torch.cat(
-            [x_actions, actions.action_one_hot, objective_att[actions.field_index]],
+        self.last_x_att = torch.cat(
+            [
+                leaves_att[actions.dom_leaf_index],
+                x_obj_att[objectives_projection.dom_index[actions.dom_field_index]],
+            ],
             dim=1,
         )
-        x_actions = self.actions_conv(x_actions, actions.edge_index)
-        x_actions = x_actions * history_att_ux
+        # "fill in" with attentional propagation
+        _aco = self.actor_conv_objective(
+            x_obj_att[objectives_projection.dom_index[actions.dom_field_index]],
+            actions.edge_index,
+        )
+        _acf = self.actor_conv_leaf(
+            leaves_att[actions.dom_leaf_index], actions.edge_index
+        )
+        # x_actions intersects objectives and leaf attention
+        x_actions = _aco * _acf
+        # give bias by order
+        x_order = 1 - self.order_bias_w * objectives.order[actions.field_index]
+        action_potentials = (
+            x_actions
+            * obj_ux_action_att[actions.ux_action_index]
+            * leaf_ux_action_att[actions.ux_action_index]
+            + x_order
+        )
+        action_votes = torch.relu(
+            global_add_pool(action_potentials, actions.action_index)
+        )
 
-        # print("x", x.shape)
-        # print("x_actions", x_actions.shape)
-        # print(actions.dom_index.shape)
-        # print("objectives", objectives.batch.shape)
-
-        action_potentials = global_max_pool(x_actions, actions.action_index)
-        action_votes = self.actor_gate(action_potentials)
-        # print("action_votes", action_votes.shape)
-
-        # critic input is pooled indicators
-        global_mp = global_max_pool(x, dom.batch)
+        # critic is aware of objectives & dom
+        x_critic_input = x_obj_input.detach()
+        # snag global indicators
+        critic_x_mp = self.critic_mp_conv(
+            x_critic_input, objectives_projection.edge_index
+        )
+        critic_x_mp = torch.relu(
+            global_max_pool(critic_x_mp, objectives_projection.batch)
+        )
         if self.is_recurrent:
-            global_mp, rnn_hxs = self._forward_gru(global_mp, rnn_hxs, masks)
-        node_mp = global_mp[dom.batch]
-        critic_input = torch.cat([x, node_mp], dim=1).detach()
-        critic_add = self.critic_add_gate(critic_input)
-        global_ap = torch.tanh(global_add_pool(torch.relu(critic_add), dom.batch))
-        critic_x = torch.cat([global_mp.detach(), global_ap], dim=1)
+            critic_x_mp, rnn_hxs = self._forward_gru(critic_x_mp, rnn_hxs, masks)
+        # snag a summuation of complexity
+        critic_x_ap = self.critic_ap_conv(
+            x_critic_input, objectives_projection.edge_index
+        )
+        critic_x_ap = global_add_pool(critic_x_ap, objectives_projection.batch)
+        critic_x_ap = torch.tanh(self.critic_ap_norm(critic_x_ap))
+        critic_x = torch.cat([critic_x_mp, critic_x_ap], dim=1)
 
         self.last_x = x
+        self.last_x_actions = x_actions
+        self.last_action_votes = action_votes
+        self.last_critic_x = critic_x
 
         batch_votes = []
         batch_size = dom.batch.max().item() + 1
-        # all_votes = torch.zeros(x.shape[0])
-        # all_votes.masked_scatter_(leaf_mask, action_votes)
-        """
-        print("#" * 20)
-        print(actions.action_index)
-        print("actins_index", actions.action_index.shape)
-        print("x_actions", x_actions.shape)
-        print("action_potentials", action_potentials.shape)
-        print("action_votes", action_votes.shape)
-        print(actions.dom_field_index.shape)
-        """
         for i in range(batch_size):
             _m = actions.batch == i
             # print(_m.shape)

@@ -12,7 +12,7 @@ services:
       - testsite
     volumes:
       - ./fuzzdom:/code/fuzzdom
-      - miniwob-volume:/tmp
+      - ./tmp:/tmp
       - miniwob-volume:/root/.cache
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models

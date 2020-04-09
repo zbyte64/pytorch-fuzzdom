@@ -124,7 +124,8 @@ def project_dom_leaves(source: nx.DiGraph):
     * dom_index (per source node)
     * leaf_index (per leaf)
     """
-    leaves = list(filter(lambda n: source.out_degree(n) == 0, source.nodes))
+    # 1 out connection because self connected
+    leaves = list(filter(lambda n: source.out_degree(n) == 1, source.nodes))
 
     t_edge_index = torch.tensor(list(source.edges)).t().contiguous()
     num_nodes = source.number_of_nodes()
@@ -199,6 +200,8 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         encoded_data["dom_idx"] = (i,)
         encoded_data["depth"] = ((d.get(node, 0) + 1) / max_depth,)
         o.add_node(i, **encoded_data)
+        # add self loops
+        o.add_edge(i, i)
         numeric_map[node] = i
     for u, v in g.edges:
         o.add_edge(numeric_map[u], numeric_map[v])
@@ -231,9 +234,14 @@ class GraphGymWrapper(gym.Wrapper):
 
     def action(self, action):
         assert len(action) == 1, str(action)
-        dom, objectives, obj_projection, leaves, actions, history = (
-            self.last_observation
-        )
+        (
+            dom,
+            objectives,
+            obj_projection,
+            leaves,
+            actions,
+            history,
+        ) = self.last_observation
         node_idx = action[0]
         action_id = actions.action_idx[node_idx].item()
         dom_idx = actions.dom_idx[node_idx].item()
