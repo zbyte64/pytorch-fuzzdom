@@ -137,8 +137,6 @@ def project_dom_leaves(source: nx.DiGraph):
         "mask": torch.zeros((final_size, 1), dtype=torch.float32),
         "dom_idx": torch.zeros((final_size,), dtype=torch.int64),
         "dom_index": torch.zeros((final_size,), dtype=torch.int64),
-        "origin_length": torch.zeros((final_size, 1), dtype=torch.float32),
-        "action_length": torch.zeros((final_size, 1), dtype=torch.float32),
     }
 
     edges = []
@@ -152,13 +150,9 @@ def project_dom_leaves(source: nx.DiGraph):
             node_index = src_node["index"]
             data["index"][index] = node_index
             data["leaf_index"][index] = k
-            data["mask"][index] = 1 if u == k else 0
+            data["mask"][index] = 1 if u == p else 0
             data["dom_idx"][index] = src_node["dom_idx"][0]
             data["dom_index"][index] = node_index
-            data["origin_length"][index] = 0.0
-            data["action_length"][
-                index
-            ] = 0.0  # nx.shortest_path_length(dom_graph, k, u)
 
     data["edge_index"] = torch.cat(edges).view(2, -1)
     data = SubData(data, dom_index=num_nodes, leaf_index=len(leaves))

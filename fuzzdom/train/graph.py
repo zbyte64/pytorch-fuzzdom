@@ -41,13 +41,14 @@ def main():
 
     torch.set_num_threads(1)
     device = torch.device("cuda:0" if args.cuda else "cpu")
-    receipts = StorageReceipt()
+    receipts = StorageReceipt(device)
     make_env = lambda tasks: MiniWoBGraphEnvironment(
         base_url=os.environ.get("BASE_URL", f"file://{MINIWOB_HTML}/"),
         levels=tasks,
         level_tracker=LevelTracker(tasks),
         wait_ms=500,
     )
+    print("device", device, torch.cuda.is_available())
 
     task = args.env_name
     if args.env_name == "PongNoFrameskip-v4":
@@ -307,22 +308,10 @@ def main():
             # tensorboard_writer.add_histogram(
             #    "task_ranks", torch.tensor(predictor._difficulty_rank), total_num_steps
             # )
-            tensorboard_writer.add_histogram("value", value, total_num_steps)
-            tensorboard_writer.add_histogram(
-                "x", actor_critic.base.last_x, total_num_steps
-            )
-            tensorboard_writer.add_histogram(
-                "x_actions", actor_critic.base.last_x_actions, total_num_steps
-            )
-            tensorboard_writer.add_histogram(
-                "x_att", actor_critic.base.last_x_att, total_num_steps
-            )
-            tensorboard_writer.add_histogram(
-                "action_votes", actor_critic.base.last_action_votes, total_num_steps
-            )
-            tensorboard_writer.add_histogram(
-                "critic_x", actor_critic.base.last_critic_x, total_num_steps
-            )
+            for k, t in actor_critic.base.last_tensors.items():
+                tensorboard_writer.add_histogram(k, t, total_num_steps)
+
+            tensorboard_writer.add_histogram("value", next_value, total_num_steps)
 
             tensorboard_writer.add_scalar(
                 "mean_reward", np.mean(episode_rewards), total_num_steps

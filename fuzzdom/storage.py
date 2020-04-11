@@ -11,9 +11,10 @@ class StorageReceipt:
     Convert graphs into integers for easier integration
     """
 
-    def __init__(self):
+    def __init__(self, device):
         self._counter = 0
         self._data = {}
+        self.device = device
 
     def __call__(self, state):
         return self.issue_receipt(state)
@@ -40,7 +41,9 @@ class StorageReceipt:
         return self._wrap_results(results)
 
     def _wrap_results(self, results):
-        return TupleBatch.from_data_list(results)
+        return tuple(
+            map(lambda x: x.to(self.device), TupleBatch.from_data_list(results))
+        )
 
     def prune(self, active_receipts):
         keep = set(active_receipts.view(-1).tolist())
