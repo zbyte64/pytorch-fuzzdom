@@ -135,7 +135,7 @@ def main():
     )
 
     # resume from last save
-    if args.save_dir != "":
+    if args.save_dir != "" and args.save_interval:
         save_path = os.path.join(args.save_dir, args.algo)
         try:
             os.makedirs(save_path)
@@ -270,8 +270,10 @@ def main():
 
         # save for every interval-th episode or for the last epoch
         if (
-            j % args.save_interval == 0 or j == num_updates - 1
-        ) and args.save_dir != "":
+            args.save_interval
+            and args.save_dir != ""
+            and (j % args.save_interval == 0 or j == num_updates - 1)
+        ):
             save_path = os.path.join(args.save_dir, args.algo)
             try:
                 os.makedirs(save_path)

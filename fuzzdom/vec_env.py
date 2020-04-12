@@ -55,6 +55,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
         e_dom,
         source_domain="dom",
         final_domain="action",
+        add_intersections=[("field", "ux_action"), ("leaf", "ux_action")],
     )
     e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
