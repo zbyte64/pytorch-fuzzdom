@@ -16,9 +16,12 @@ from torch_geometric.nn import (
     BatchNorm,
     GraphSizeNorm,
     InstanceNorm,
+    APPNP,
 )
 import torch.nn.functional as F
+from torch_geometric.utils import add_self_loops
 from torch_geometric.utils import softmax
+import math
 
 from a2c_ppo_acktr.model import NNBase
 from a2c_ppo_acktr.utils import init
@@ -35,25 +38,42 @@ init_r = lambda m: init(
 )
 init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
 
+reverse_edges = lambda e: torch.stack([e[1], e[0]]).contiguous()
+full_edges = lambda e: torch.cat(
+    [add_self_loops(e)[0], reverse_edges(e)], dim=1
+).contiguous()
+# full_edges = lambda x: add_self_loops(x)[0]
+# reverse_edges = lambda x: x
+
 
 class AdditiveMask(nn.Module):
-    def __init__(self, input_dim, mask_dim=1):
+    def __init__(self, input_dim, mask_dim=1, K=5):
         super(AdditiveMask, self).__init__()
-        self.edge_weight_fn = nn.Sequential(
-            init_r(nn.Linear(input_dim * 2, 1)), nn.ReLU(),
-        )
-        self.conv = SGConv(mask_dim, mask_dim, K=3)
-        # self.fn = nn.Sequential(
-        #    init_r(nn.Linear(input_dim + mask_dim, mask_dim)), nn.ReLU(),
-        # )
+
+        self.alpha = nn.Parameter(torch.tensor(0.5))
+        self.x_fn = nn.Sequential(init_t(nn.Linear(input_dim, input_dim)), nn.Tanh(),)
+        # self.conv = SAGEConv(mask_dim, mask_dim)
+        # self.conv = GCNConv(mask_dim, mask_dim)
+        self.conv = APPNP(K=K, alpha=self.alpha)
+        # self.conv = GraphConv(mask_dim, mask_dim)
+        self.K = K
 
     def forward(self, x, mask, edge_index):
-        edge_weights = self.edge_weight_fn(
-            x[edge_index.view(-1)].view(edge_index.size(1), -1)
+        x = self.x_fn(x)
+        # edge_weights = self.pdist(x[edge_index[0]], x[edge_index[1]]).view(
+        #    edge_index.shape[1]
+        # )
+        # edge_weights = self.edge_weight_fn(dist * directions).view(-1)
+        edge_weights = torch.relu(
+            F.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
         ).view(-1)
-        fill = self.conv(mask, edge_index, edge_weights)
-        # fill = torch.min(self.fn(torch.cat([x, spread], dim=1)), spread)
-        return torch.max(fill, mask)
+        fill = torch.relu(mask)
+        # for i in range(self.K):
+        #    add_fill = fill[edge_index[0]] * edge_weights
+
+        fill = self.conv(fill, edge_index, edge_weights)
+        # fill = torch.tanh(fill)
+        return fill, edge_weights
 
 
 class GNNBase(NNBase):
@@ -84,17 +104,24 @@ class GNNBase(NNBase):
         self.dom_classes = nn.Sequential(
             init_r(nn.Linear(text_embed_size, dom_attr_size)), nn.ReLU(),
         )
-        self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
-        self.x_dom_norm = BatchNorm(hidden_size)
+        self.dom_fn = nn.Sequential(
+            init_t(nn.Linear(query_input_dim, hidden_size - query_input_dim)),
+            nn.Tanh(),
+        )
+        self.global_conv = SAGEConv(hidden_size, hidden_size)
+        # self.global_conv = SGConv(hidden_size, hidden_size, K=7)
+        # self.x_dom_norm = BatchNorm(hidden_size)
 
         self.dom_ux_action_fn = nn.Sequential(
             init_t(nn.Linear(hidden_size, action_one_hot_size)), nn.Softmax(dim=1),
         )
-        self.leaves_conv = AdditiveMask(hidden_size, 1)
+        self.leaves_conv = AdditiveMask(hidden_size, 1, K=7)
         # attr similarities
         attr_similarity_size = 8
-        dom_objective_size = hidden_size + attr_similarity_size
-        self.objective_conv = AdditiveMask(hidden_size, attr_similarity_size)
+        self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
+        self.objective_int_fn = nn.Sequential(
+            init_t(nn.Linear(attr_similarity_size, 1)), nn.Sigmoid(),
+        )
 
         self.objective_ux_action_fn = nn.Sequential(
             init_r(nn.Linear(text_embed_size * 2, text_embed_size)),
@@ -104,8 +131,11 @@ class GNNBase(NNBase):
         )
         # fn and maxpooled to become our actor gate(objective, leaves)
         # leaf mask, obj mask, order, [dom,obj]ux_actions
-        trunk_size = 1 + attr_similarity_size + 1 + 2
-        self.actor_gate = nn.Sequential(init_(nn.Linear(trunk_size, 1)), nn.ReLU())
+        # trunk_size = 1 + attr_similarity_size + 1 + 2
+        # ux similarity, dom intereset, order
+        trunk_size = 3
+        self.pdist = nn.PairwiseDistance(keepdim=True)
+        self.actor_gate = nn.Sequential(nn.Linear(trunk_size, 1, bias=False), nn.ReLU())
 
         critic_size = hidden_size + action_one_hot_size + attr_similarity_size
         self.critic_obj_fn = nn.Sequential(
@@ -114,10 +144,13 @@ class GNNBase(NNBase):
             init_r(nn.Linear(text_embed_size, action_one_hot_size)),
             nn.ReLU(),
         )
-        self.critic_linear = nn.Sequential(
+        self.critic_linear_add = nn.Sequential(
             init_r(nn.Linear(critic_size, hidden_size)), nn.ReLU()
         )
-        self.critic_ap_norm = BatchNorm(hidden_size)
+        self.critic_linear_max = nn.Sequential(
+            init_r(nn.Linear(critic_size, hidden_size)), nn.ReLU()
+        )
+        self.critic_ap_norm = nn.BatchNorm1d(hidden_size)
         self.critic_gate = nn.Sequential(init_(nn.Linear(hidden_size * 2, 1)),)
         self.train()
 
@@ -161,20 +194,26 @@ class GNNBase(NNBase):
                     ],
                     dim=1,
                 ),
-                dom.edge_index,
+                add_self_loops(dom.edge_index)[0],
             )
             x = torch.cat([x, _add_x], dim=1)
 
-        _add_x = self.global_conv(x, dom.edge_index)
+        _add_x = self.dom_fn(x)
 
-        x = torch.relu(self.x_dom_norm(torch.cat([x, _add_x], dim=1)))
+        # x = torch.relu(self.x_dom_norm(torch.cat([x, _add_x], dim=1)))
+        x = torch.cat([x, _add_x], dim=1)
+        proj_x = self.global_conv(x, full_edges(dom.edge_index))
+        self.last_tensors["proj_x"] = proj_x
 
         # leaves are targetable elements
         leaf_t_mask = leaves.mask.type(torch.float)
         # compute a leaf dependent dom feats to indicate relevent nodes
-        leaves_att = self.leaves_conv(
-            x[leaves.dom_index], leaf_t_mask, leaves.edge_index
+        leaves_att, leaves_ew = self.leaves_conv(
+            proj_x[leaves.dom_index],
+            leaf_t_mask,
+            add_self_loops(reverse_edges(leaves.edge_index))[0],
         )
+        self.last_tensors["leaves_edge_weights"] = leaves_ew
 
         # infer action from dom node
         dom_ux_action = self.dom_ux_action_fn(x)
@@ -198,11 +237,16 @@ class GNNBase(NNBase):
             ],
             dim=1,
         )
-        obj_att = self.objective_conv(
-            x[objectives_projection.dom_index],
-            obj_tag_similarities,
-            objectives_projection.edge_index,
+        obj_att_input = self.objective_int_fn(obj_tag_similarities)
+        self.last_tensors["obj_att_input"] = obj_att_input
+        self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
+        obj_att, obj_ew = self.objective_conv(
+            proj_x[objectives_projection.dom_index],
+            obj_att_input,
+            full_edges(objectives_projection.edge_index),
         )
+
+        self.last_tensors["obj_edge_weights"] = obj_ew
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(
             torch.cat(
@@ -212,14 +256,18 @@ class GNNBase(NNBase):
         )
 
         # project into main trunk
+        ux_action_consensus = (
+            obj_ux_action.view(-1, 1)[actions.ux_action_index]
+            * dom_ux_action.view(-1, 1)[actions.dom_ux_action_index]
+        ).view(-1, 1)
+        dom_interest = (
+            obj_att[objectives_projection.field_index][actions.dom_field_index]
+            * leaves_att[actions.dom_leaf_index]
+        )
+        self.last_tensors["ux_action_consensus"] = ux_action_consensus
+        self.last_tensors["dom_interest"] = dom_interest
         trunk = torch.cat(
-            [
-                obj_att[objectives_projection.dom_index[actions.dom_field_index]],
-                leaves_att[actions.dom_leaf_index],
-                obj_ux_action.view(-1, 1)[actions.ux_action_index],
-                dom_ux_action.view(-1, 1)[actions.dom_ux_action_index],
-                objectives.order[actions.field_index],
-            ],
+            [dom_interest, ux_action_consensus, objectives.order[actions.field_index],],
             dim=1,
         )
         action_votes = global_max_pool(self.actor_gate(trunk), actions.action_index)
@@ -238,25 +286,25 @@ class GNNBase(NNBase):
         )
         x_critic_input = torch.cat(
             [
-                x[objectives_projection.dom_index],
+                proj_x[objectives_projection.dom_index],
                 obj_tag_similarities,
                 critic_obj[objectives_projection.field_index],
             ],
             dim=1,
-        )  # .detach()
-        x_critic = self.critic_linear(x_critic_input)
+        )
+        x_critic_add = self.critic_linear_add(x_critic_input)
+        x_critic_max = self.critic_linear_max(x_critic_input)
 
         # snag global indicators
-        critic_x_mp = torch.relu(global_max_pool(x_critic, objectives_projection.batch))
+        critic_x_mp = torch.relu(
+            global_max_pool(x_critic_max, objectives_projection.batch)
+        )
         if self.is_recurrent:
             critic_x_mp, rnn_hxs = self._forward_gru(critic_x_mp, rnn_hxs, masks)
         # snag a summuation of complexity
-        # critic_x_ap = self.critic_ap_conv(
-        #    x_critic_input, objectives_projection.edge_index
-        # )
         # graph norm = safe node sum
-        critic_x_ap = global_add_pool(
-            self.critic_ap_norm(x_critic), objectives_projection.batch,
+        critic_x_ap = self.critic_ap_norm(
+            global_add_pool(x_critic_add, objectives_projection.batch)
         )
         critic_x_ap = torch.relu(critic_x_ap)
         critic_x = torch.cat([critic_x_mp, critic_x_ap], dim=1)
@@ -272,7 +320,7 @@ class GNNBase(NNBase):
         for i in range(batch_size):
             _m = actions.batch == i
             # print(_m.shape)
-            batch_votes.append(action_votes[actions.action_index[_m]])
+            batch_votes.append(action_votes[actions.action_index][_m])
         # print("bv", batch_votes[0].shape)
         return (critic_value, batch_votes, rnn_hxs)
 
