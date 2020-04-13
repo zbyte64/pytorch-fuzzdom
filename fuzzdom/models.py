@@ -259,12 +259,29 @@ class GNNBase(NNBase):
         # debug: set to click
         obj_ux_action = torch.zeros(bs, 5, device="cuda:0")
         obj_ux_action[:, 0] = 1.0
+        leaf_ux_action = torch.zeros(leaves.batch.shape[0], 5, device="cuda:0")
+        leaf_ux_action[:, 0] = 1.0
 
         # project into main trunk
         _obj_ux_action = obj_ux_action.view(-1, 1)[actions.field_ux_action_index]
         _leaf_ux_action = leaf_ux_action.view(-1, 1)[actions.leaf_ux_action_index]
         _obj_mask = obj_att[actions.field_index]
         _leaf_mask = leaves_att[actions.dom_leaf_index]
+
+        torch.set_printoptions(profile="full")
+        print("action_idx", actions.action_idx.shape)
+        print(actions.action_idx)
+        print("field_action_index", actions.field_ux_action_index.shape)
+        print(actions.field_ux_action_index)
+        print("p_action", _obj_ux_action.shape)
+        # print(_obj_ux_action)
+        print(actions.action_idx > 0)
+        print((actions.action_idx > 0) & (_obj_ux_action > 0).squeeze(1))
+
+        assert _obj_ux_action[actions.action_idx > 0].sum().item() == 0, (
+            _obj_ux_action[actions.action_idx > 0].sum().item()
+        )
+        assert _leaf_ux_action[actions.action_idx > 0].sum().item() == 0
 
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
         dom_interest = _obj_mask * _leaf_mask
@@ -283,6 +300,9 @@ class GNNBase(NNBase):
             actions.action_index,
         )
         action_votes = self.actor_gate(trunk)
+        action_batch_idx = global_max_pool(
+            actions.batch.view(-1, 1), actions.action_index
+        )
 
         self.last_tensors["obj_att"] = obj_att
         self.last_tensors["leaves_att"] = leaves_att
@@ -327,9 +347,9 @@ class GNNBase(NNBase):
         batch_votes = []
         batch_size = dom.batch.max().item() + 1
         for i in range(batch_size):
-            _m = actions.batch == i
+            _m = action_batch_idx == i
             # print(_m.shape)
-            shares = action_votes[actions.action_index][_m]
+            shares = action_votes[_m]
             batch_votes.append(shares)
         # print("bv", batch_votes[0].shape)
         return (critic_value, batch_votes, rnn_hxs)

@@ -47,7 +47,7 @@ class SubData(Data):
 
 VIndex = namedtuple("VIndex", ["field", "from_domain", "to_domain"])
 VDomain = namedtuple("VDomain", ["key", "field", "value", "size", "order"])
-_order_domain_tuple = lambda a, b: (a, b) if a.order > b.order else (b, a)
+_order_domain_tuple = lambda a, b: (a, b)  # if a.order > b.order else (b, a)
 
 
 def vectorize_projections(
@@ -75,7 +75,7 @@ def vectorize_projections(
         for i, (key, values) in enumerate(projections.items())
     }
     v_indexes = [
-        VIndex(f"{d1}_{d2}_index", *_order_domain_tuple(v_domains[d1], v_domains[d2]))
+        VIndex(f"{d1}_{d2}_index", v_domains[d1], v_domains[d2])
         for (d1, d2) in add_intersections
     ]
 
@@ -118,6 +118,16 @@ def vectorize_projections(
     data.update(
         {v.field: torch.zeros((final_size,), dtype=torch.int64) for v in v_indexes}
     )
+    """
+    data.update(
+        {
+            v.field: torch.ger(
+                torch.arange(0, v.from_domain.size), torch.arange(0, v.to_domain_size)
+            )  # repeat(num_nodes, final_size / num_nodes / (v.from_domain.size * v.to_domain_size))
+            for v in v_indexes
+        }
+    )
+    """
     edges = []
     index = -1
 
@@ -162,6 +172,8 @@ def vectorize_projections(
 
     data = SubData(data, **indexes)
     data.num_nodes = final_size
+    data.combinations = combinations
+    data.projected_domains = proj_domains
     return data
 
 

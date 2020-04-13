@@ -235,17 +235,18 @@ class GraphGymWrapper(gym.Wrapper):
             actions,
             history,
         ) = self.last_observation
-        node_idx = action[0]
-        action_id = actions.action_idx[node_idx].item()
-        dom_idx = actions.dom_idx[node_idx].item()
-        field_idx = actions.field_idx[node_idx].item()
+        combination_idx = action[0]
+        # ux_action, field, leaf
+        selected_combo = actions.combinations[combination_idx]
+        # print("Selected combo:", selected_combo)
+        selected_targets = {k: v for i, c in selected_combo for k, v in c.items()}
+        # print("Selected:", selected_targets)
+        action_id = selected_targets["action_idx"]
+        assert action_id == 0, str(action_id)
+        field_idx = selected_targets["field_idx"]
+        dom_idx = selected_targets["dom_idx"]
         dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]
         field_value = list(self.last_state.fields.values)[field_idx]
-        # n = {
-        #    k: self.last_observation[k][node_idx]
-        #    for k in self.last_observation.keys
-        #    if not k.startswith("edge_")
-        # }
         self.prior_actions.append((action_id, dom_idx, field_idx))
         return (action_id, dom_ref, field_value)
 

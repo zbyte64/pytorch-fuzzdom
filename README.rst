@@ -66,6 +66,10 @@ Run tensorboard::
   tensorboard --log-dir=./tmp/log
 
 
+Train since task::
+
+  docker-compose run app python -m fuzzdom.train.graph --num-processes=12 --num-steps=32 --log-interval=1 --algo=ppo --env-name=miniwob/click-link.html --save-interval=0
+
 
 Inspirations
 ============
