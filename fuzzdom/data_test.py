@@ -55,6 +55,8 @@ def test_project_vectors():
     m = p[:, 0] == p[:, 1] * p[:, 2]
     assert m.min().item(), str(p)
 
+    assert v.__inc__("field_ux_action_index", 1) == field_actions.view(-1).shape[0] + 1
+
 
 def test_project_vectors_batch_packing():
     g = nx.DiGraph()

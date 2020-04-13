@@ -41,7 +41,7 @@ class SubData(Data):
 
     def __inc__(self, key, value):
         if hasattr(self, f"__{key}__"):
-            return getattr(self, f"__{key}__")
+            return value + getattr(self, f"__{key}__")
         return Data.__inc__(self, key, value)
 
 
