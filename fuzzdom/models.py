@@ -83,7 +83,7 @@ class GNNBase(NNBase):
         self.dom_encoder = dom_encoder
 
         dom_attr_size = 5
-        action_one_hot_size = 5
+        action_one_hot_size = 4  # 5
         query_input_dim = 6 + 2 * dom_attr_size
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
@@ -257,26 +257,36 @@ class GNNBase(NNBase):
         obj_ux_action = self.objective_ux_action_fn(sims)
         """
         # debug: set to click
-        obj_ux_action = torch.zeros(bs, 5, device="cuda:0")
+        obj_ux_action = torch.zeros(bs, 4, device="cuda:0")
         obj_ux_action[:, 0] = 1.0
-        leaf_ux_action = torch.zeros(leaves.batch.shape[0], 5, device="cuda:0")
+        leaf_ux_action = torch.zeros(leaves.batch.shape[0], 4, device="cuda:0")
         leaf_ux_action[:, 0] = 1.0
+        assert actions.field_ux_action_index.max().item() + 1 == bs * 4, str(
+            (actions.field_ux_action_index.max().item(), bs * 4)
+        )
+        _c = torch.arange(0, bs * 4, device="cuda:0").view(-1, 1)[
+            actions.field_ux_action_index
+        ]
+        _m = _c.view(-1) == actions.field_ux_action_index
+        assert _m.min().item() == 1, str(_m)
 
         # project into main trunk
         _obj_ux_action = obj_ux_action.view(-1, 1)[actions.field_ux_action_index]
         _leaf_ux_action = leaf_ux_action.view(-1, 1)[actions.leaf_ux_action_index]
-        _obj_mask = obj_att[actions.field_index]
-        _leaf_mask = leaves_att[actions.dom_leaf_index]
+        _obj_mask = obj_att[actions.field_dom_index]
+        _leaf_mask = leaves_att[actions.leaf_dom_index]
 
         torch.set_printoptions(profile="full")
-        print("action_idx", actions.action_idx.shape)
-        print(actions.action_idx)
-        print("field_action_index", actions.field_ux_action_index.shape)
-        print(actions.field_ux_action_index)
-        print("p_action", _obj_ux_action.shape)
+        assert global_max_pool(_obj_mask, actions.batch).min().item() > 0
+        assert global_max_pool(_leaf_mask, actions.batch).min().item() > 0
+        # print("action_idx", actions.action_idx.shape)
+        # print(actions.action_idx)
+        # print("field_action_index", actions.field_ux_action_index.shape)
+        # print(actions.field_ux_action_index)
+        # print("p_action", _obj_ux_action.shape)
         # print(_obj_ux_action)
-        print(actions.action_idx > 0)
-        print((actions.action_idx > 0) & (_obj_ux_action > 0).squeeze(1))
+        # print(actions.action_idx > 0)
+        # print((actions.action_idx > 0) & (_obj_ux_action > 0).squeeze(1))
 
         assert _obj_ux_action[actions.action_idx > 0].sum().item() == 0, (
             _obj_ux_action[actions.action_idx > 0].sum().item()
@@ -286,6 +296,10 @@ class GNNBase(NNBase):
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
         dom_interest = _obj_mask * _leaf_mask
         action_consensus = torch.relu(ux_action_consensus * dom_interest) ** 0.5
+
+        assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
+        assert global_max_pool(dom_interest, actions.batch).min().item() > 0
+        assert global_max_pool(action_consensus, actions.batch).min().item() > 0
         self.last_tensors["action_consensus"] = action_consensus
         self.last_tensors["ux_action_consensus"] = ux_action_consensus
         self.last_tensors["dom_interest"] = dom_interest
@@ -350,6 +364,7 @@ class GNNBase(NNBase):
             _m = action_batch_idx == i
             # print(_m.shape)
             shares = action_votes[_m]
+            assert shares.min().item() > 0, str(i)
             batch_votes.append(shares)
         # print("bv", batch_votes[0].shape)
         return (critic_value, batch_votes, rnn_hxs)

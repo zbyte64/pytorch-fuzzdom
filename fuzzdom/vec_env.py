@@ -55,7 +55,12 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
         e_dom,
         source_domain="dom",
         final_domain="action",
-        add_intersections=[("field", "ux_action"), ("leaf", "ux_action")],
+        add_intersections=[
+            ("field", "ux_action"),
+            ("leaf", "ux_action"),
+            ("field", "dom"),
+            ("leaf", "dom"),
+        ],
     )
     e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
@@ -242,7 +247,7 @@ class GraphGymWrapper(gym.Wrapper):
         selected_targets = {k: v for i, c in selected_combo for k, v in c.items()}
         # print("Selected:", selected_targets)
         action_id = selected_targets["action_idx"]
-        assert action_id == 0, str(action_id)
+        # assert action_id == 0, str(action_id)
         field_idx = selected_targets["field_idx"]
         dom_idx = selected_targets["dom_idx"]
         dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]

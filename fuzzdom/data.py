@@ -50,8 +50,7 @@ class SubData(Data):
 
 
 VIndex = namedtuple("VIndex", ["field", "from_domain", "to_domain"])
-VDomain = namedtuple("VDomain", ["key", "field", "value", "size", "order"])
-_order_domain_tuple = lambda a, b: (a, b)  # if a.order > b.order else (b, a)
+VDomain = namedtuple("VDomain", ["key", "field", "value", "size"])
 
 
 def vectorize_projections(
@@ -75,9 +74,15 @@ def vectorize_projections(
     num_nodes = source.number_of_nodes()
     final_size = len(combinations) * num_nodes
     v_domains = {
-        key: VDomain(key, f"{key}_index", values, len(values), i)
-        for i, (key, values) in enumerate(projections.items())
+        key: VDomain(key, f"{key}_index", values, len(values))
+        for key, values in projections.items()
     }
+    v_domains[source_domain] = VDomain(
+        source_domain, f"{source_domain}_index", source.nodes, num_nodes
+    )
+    v_domains[final_domain] = VDomain(
+        final_domain, f"{final_domain}_index", combinations, len(combinations)
+    )
     v_indexes = [
         VIndex(f"{d1}_{d2}_index", v_domains[d1], v_domains[d2])
         for (d1, d2) in add_intersections
