@@ -4,7 +4,7 @@ import logging
 import networkx as nx
 import torch
 from torch_geometric.data import Batch, Data
-from .data import vectorize_projections
+from .data import vectorize_projections, IndexedBatch
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
@@ -31,6 +31,7 @@ def test_project_vectors():
         final_domain="action",
         add_intersections=[("field", "ux_action"), ("ux_action", "field")],
     )
+    v = IndexedBatch.fix_batch_indices(v)
     field_actions = torch.ger(torch.arange(1, 3), torch.arange(10, 15))
     p = torch.cat(
         [
@@ -55,7 +56,8 @@ def test_project_vectors():
     m = p[:, 0] == p[:, 1] * p[:, 2]
     assert m.min().item(), str(p)
 
-    assert v.__inc__("field_ux_action_index", 1) == field_actions.view(-1).shape[0] + 1
+    assert v.__inc__("field_ux_action_index", 0) == field_actions.view(-1).shape[0]
+    assert v.__inc__("ux_action_field_index", 0) == field_actions.view(-1).shape[0]
 
 
 def test_project_vectors_batch_packing():
@@ -73,7 +75,7 @@ def test_project_vectors_batch_packing():
         g,
         source_domain="dom",
         final_domain="action",
-        add_intersections=[("ux_action", "field")],
+        add_intersections=[("field", "ux_action")],
     )
     field_actions1 = torch.ger(torch.arange(1, 3), torch.arange(10, 15))
 
@@ -92,7 +94,9 @@ def test_project_vectors_batch_packing():
         add_intersections=[("field", "ux_action")],
     )
     field_actions2 = torch.ger(torch.arange(31, 34), torch.arange(20, 25))
-    batch = Batch.from_data_list([v1, v2])
+    print(v1)
+    print(v2)
+    batch = IndexedBatch.from_data_list([v1, v2])
 
     fa_ids = torch.arange(0, 3 * 5 + 2 * 5)
     _m = fa_ids[batch.field_ux_action_index] == batch.field_ux_action_index
@@ -142,7 +146,7 @@ def test_project_vectors_single_batch_packing():
     )
     field_actions1 = torch.ger(torch.arange(1, 3), torch.arange(10, 15))
 
-    batch = Batch.from_data_list([v1])
+    batch = IndexedBatch.from_data_list([v1])
 
     fa_ids = torch.arange(0, 2 * 5)
     _m = fa_ids[batch.field_ux_action_index] == batch.field_ux_action_index

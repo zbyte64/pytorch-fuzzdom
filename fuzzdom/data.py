@@ -30,9 +30,8 @@ class SubData(Data):
         if callable(keys):
             keys = keys()
         kwargs = {
-            key: data_set[key].view(-1)
-            if key.endswith("index") and not key.startswith("edge_")
-            else data_set[key]
+            # 2 dims required to work with Batch __inc__
+            key: data_set[key].view(-1) if key in foreign_keys else data_set[key]
             for key in keys
         }
         Data.__init__(self, **kwargs)
@@ -41,8 +40,13 @@ class SubData(Data):
 
     def __inc__(self, key, value):
         if hasattr(self, f"__{key}__"):
-            return value + getattr(self, f"__{key}__")
+            return getattr(self, f"__{key}__")
         return Data.__inc__(self, key, value)
+
+    def __cat_dim__(self, key, value):
+        if hasattr(self, f"__{key}__"):
+            return -1
+        return Data.__cat_dim__(self, key, value)
 
 
 VIndex = namedtuple("VIndex", ["field", "from_domain", "to_domain"])
@@ -178,8 +182,8 @@ def vectorize_projections(
 
 
 class TupleBatch:
-    @staticmethod
-    def from_data_list(data_list):
+    @classmethod
+    def from_data_list(cls, data_list):
         # a batch of multiple samples
         ret = []
         for batch_idx, samples in enumerate(data_list):
@@ -190,4 +194,19 @@ class TupleBatch:
                 # why do we get floats?
                 source.edge_index = source.edge_index.type(torch.long)
                 packed_sample.append(source)
-        return tuple(map(Batch.from_data_list, zip(*ret)))
+        return tuple(map(IndexedBatch.from_data_list, zip(*ret)))
+
+
+class IndexedBatch(Batch):
+    @classmethod
+    def from_data_list(cls, data_list, follow_batch=[]):
+        batch = Batch.from_data_list(data_list)
+        cls.fix_batch_indices(batch)
+        return batch
+
+    @classmethod
+    def fix_batch_indices(cls, batch):
+        for key in list(batch.keys):
+            if key.endswith("index") and not key.startswith("edge_"):
+                batch[key] = batch[key].view(-1)
+        return batch
