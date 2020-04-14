@@ -322,6 +322,7 @@ class GNNBase(NNBase):
             actions.action_index,
         )
         action_votes = self.actor_gate(trunk)
+        # gather the batch ids for the votes
         action_batch_idx = global_max_pool(
             actions.batch.view(-1, 1), actions.action_index
         )
@@ -369,18 +370,7 @@ class GNNBase(NNBase):
         self.last_tensors["action_votes"] = action_votes
         self.last_tensors["critic_x"] = critic_x
 
-        batch_votes = []
-        batch_size = dom.batch.max().item() + 1
-        assert action_batch_idx.max().item() == batch_size - 1
-        for i in range(batch_size):
-            _m = action_batch_idx == i
-            # print(_m.shape)
-            assert _m.sum().item() > 0
-            shares = action_votes[_m]
-            assert shares.max().item() > 0, "No votes"
-            batch_votes.append(shares)
-        # print("bv", batch_votes[0].shape)
-        return (critic_value, batch_votes, rnn_hxs)
+        return (critic_value, (batch_votes, action_batch_idx), rnn_hxs)
 
 
 class Encoder(torch.nn.Module):

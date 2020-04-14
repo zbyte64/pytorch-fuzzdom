@@ -6,7 +6,7 @@ import torch
 class MixedDistribution:
     # a category with mixed episodic sizes
     # children are batch instances
-    def __init__(self, *children):
+    def __init__(self, children):
         self.children = children
 
     def _f(self, f):
@@ -15,50 +15,41 @@ class MixedDistribution:
         """
         r = []
         for i, child in enumerate(self.children):
-            r.append(f(child, i).view(-1, 1))
-        r = torch.cat(r, dim=1)
+            r.append(f(child, i))
         return r
 
     def log_probs(self, actions):
-        return self._f(lambda child, i: child.log_probs(actions[i].view(-1, 1)))
+        p = self._f(lambda child, i: child.log_probs(actions[i].view(1, -1)))
+        return torch.cat(p, dim=0)
 
     def entropy(self):
-        return self._f(lambda child, i: child.entropy())
+        e = self._f(lambda child, i: child.entropy())
+        return torch.stack(e)
 
     def mode(self):
-        return self._f(lambda child, i: child.mode())
+        m = self._f(lambda child, i: child.mode())
+        return torch.cat(m, dim=0).view(-1, 1)
 
     def sample(self):
-        return self._f(lambda child, i: child.sample())
+        s = self._f(lambda child, i: child.sample())
+        return torch.cat(s, dim=0).view(-1, 1)
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.children})"
 
 
-class CatDistribution(MixedDistribution):
-    # batch level mixture of features
-    # children are categories
-    def log_probs(self, actions):
-        p = self._f(lambda child, i: child.log_probs(actions[:, i].view(-1, 1)))
-        return p.sum(dim=1, keepdim=True)
-
-    def entropy(self):
-        e = self._f(lambda child, i: child.entropy())
-        return e.sum(dim=1, keepdim=True)
-
-    def mode(self):
-        m = self._f(lambda child, i: child.mode())
-        return m
-        return m.sum(dim=1, keepdim=True)
-
-
 class NodeObjective(nn.Module):
-    def forward(self, x):
+    def forward(self, x, batch):
         n_dist = []
-        for ni in x:
+        assert len(batch.shape) == 1
+        assert len(x.shape) == 2
+        assert batch.shape[0] == x.shape[0]
+        max_batch_id = batch.max().item()
+        for batch_id in range(max_batch_id + 1):
             # 1 x N
-            ni = ni.view(1, -1)
+            batch_mask = batch == batch_id
+            ni = x[batch_mask].view(1, -1)
             ni_dist = FixedCategorical(logits=ni)
             n_dist.append(ni_dist)
-        n_dist = MixedDistribution(*n_dist)
-        return CatDistribution(n_dist)
+        n_dist = MixedDistribution(n_dist)
+        return n_dist
