@@ -29,6 +29,7 @@ def test_mixed_dist_mode():
     modes = dist.mode()
     ref_modes = ref_dist.mode()
     assert modes.shape == ref_modes.shape
+    assert tuple(modes.shape) == (4, 1)
 
 
 def test_mixed_dist_sample():
@@ -53,3 +54,19 @@ def test_mixed_dist_log_probs():
     t = dist.log_probs(torch.arange(0, 4))
     ref_t = ref_dist.log_probs(torch.arange(0, 4))
     assert t.shape == ref_t.shape
+
+
+def test_node_objective_mode():
+    x = torch.zeros((10,), dtype=torch.float)
+    x[1] = 1.0  # second option
+    x[2] = 1.0  # first option
+    x[9] = 1.0  # last option
+    x = x.view(-1, 1)
+    batch = torch.tensor([0, 0, 1, 1, 1, 2, 2, 2, 2, 2], dtype=torch.int64)
+    dist = NodeObjective().forward((x, batch))
+    mode = dist.mode()
+    truth = torch.tensor([[1], [0], [4]])
+    assert (mode == truth).min().item() == 1, str(mode)
+    sample = dist.sample()
+    assert sample.shape == truth.shape
+    assert dist.log_probs(mode).min().item() < 0
