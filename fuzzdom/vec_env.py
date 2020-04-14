@@ -43,9 +43,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     leaves_data, leaves = project_dom_leaves(e_dom)
     actions_data = vectorize_projections(
         {
-            "ux_action": [
-                {"action_idx": i, "action_one_hot": one_hot(i, 5)} for i in range(4)
-            ],
+            "ux_action": [{"action_idx": i} for i in range(4)],
             "field": [{"field_idx": i} for i in e_fields.nodes],
             "leaf": [
                 {"dom_idx": torch.tensor(e_dom.nodes[i]["dom_idx"], dtype=torch.int64)}
@@ -249,7 +247,7 @@ class GraphGymWrapper(gym.Wrapper):
         # print("Selected:", selected_targets)
         action_id = selected_targets["action_idx"]
         if action_id:
-            print("Not click", selected_targets)
+            print("Not click", combination_idx, selected_targets)
         # assert action_id == 0, str(action_id)
         field_idx = selected_targets["field_idx"]
         dom_idx = selected_targets["dom_idx"]

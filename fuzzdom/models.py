@@ -325,10 +325,10 @@ class GNNBase(NNBase):
         # gather the batch ids for the votes
         action_batch_idx = global_max_pool(
             actions.batch.view(-1, 1), actions.action_index
-        )
+        ).view(-1)
         action_idx = global_max_pool(actions.action_idx, actions.action_index)
-        action_votes[action_idx == 0].min().item() > 0
-        action_votes[action_idx > 0].max().item() < 1e-3
+        action_votes[action_idx == 0].min().item() > 0.999
+        action_votes[action_idx > 0].sum().item() < 1e-3
 
         self.last_tensors["obj_att"] = obj_att
         self.last_tensors["leaves_att"] = leaves_att
@@ -370,7 +370,7 @@ class GNNBase(NNBase):
         self.last_tensors["action_votes"] = action_votes
         self.last_tensors["critic_x"] = critic_x
 
-        return (critic_value, (batch_votes, action_batch_idx), rnn_hxs)
+        return (critic_value, (action_votes, action_batch_idx), rnn_hxs)
 
 
 class Encoder(torch.nn.Module):

@@ -39,11 +39,12 @@ class MixedDistribution:
 
 
 class NodeObjective(nn.Module):
-    def forward(self, x, batch):
+    def forward(self, _x):
+        x, batch = _x
         n_dist = []
-        assert len(batch.shape) == 1
-        assert len(x.shape) == 2
-        assert batch.shape[0] == x.shape[0]
+        assert len(batch.shape) == 1, str(batch.shape)
+        assert len(x.shape) == 2, str(x.shape)
+        assert batch.shape[0] == x.shape[0], str((x.shape, batch.shape))
         max_batch_id = batch.max().item()
         for batch_id in range(max_batch_id + 1):
             # 1 x N
