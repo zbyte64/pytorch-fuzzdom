@@ -48,6 +48,16 @@ full_edges = lambda e: torch.cat(
 ).contiguous()
 
 
+def safe_bc(x, b):
+    """
+    Doas a matrix broadcast but checks that the mask size is appropriate
+    """
+    assert len(x.shape) > 1
+    assert len(b.shape) == 1, "Mask should be 1D"
+    b.shape[0] == b.max().item() + 1, "Incomplete/Wrong mask"
+    return x[b]
+
+
 class AdditiveMask(nn.Module):
     def __init__(self, input_dim, mask_dim=1, K=5):
         super(AdditiveMask, self).__init__()
@@ -201,7 +211,7 @@ class GNNBase(NNBase):
         leaf_t_mask = leaves.mask.type(torch.float)
         # compute a leaf dependent dom feats to indicate relevent nodes
         leaves_att, leaves_ew = self.leaves_conv(
-            proj_x[leaves.dom_index],
+            safe_bc(proj_x, leaves.dom_index),
             leaf_t_mask,
             add_self_loops(reverse_edges(leaves.edge_index))[0],
         )
@@ -209,13 +219,14 @@ class GNNBase(NNBase):
         self.last_tensors["leaves_edge_weights"] = leaves_ew
 
         # infer action from dom nodes, but for leaves only
-        leaf_ux_action = self.dom_ux_action_fn(x[leaves.dom_index])
+        # TODO
+        leaf_ux_action = self.dom_ux_action_fn(safe_bc(x, leaves.dom_index))
 
         # compute an objective dependent dom feats
         # start with word embedding similarities
         obj_sim = lambda tag, obj: F.cosine_similarity(
-            dom[tag][objectives_projection.dom_index],
-            objectives[obj][objectives_projection.field_index],
+            safe_bc(dom[tag], objectives_projection.dom_index),
+            safe_bc(objectives[obj], objectives_projection.field_index),
         ).view(-1, 1)
         obj_tag_similarities = torch.cat(
             [
@@ -236,7 +247,7 @@ class GNNBase(NNBase):
         self.last_tensors["obj_att_input"] = obj_att_input
         self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
         obj_att, obj_ew = self.objective_conv(
-            proj_x[objectives_projection.dom_index],
+            safe_bc(proj_x, objectives_projection.dom_index),
             obj_att_input,
             add_self_loops(objectives_projection.edge_index)[0],
         )
@@ -271,10 +282,14 @@ class GNNBase(NNBase):
         assert _m.min().item() == 1, str(_m)
 
         # project into main trunk
-        _obj_ux_action = obj_ux_action.view(-1, 1)[actions.field_ux_action_index]
-        _leaf_ux_action = leaf_ux_action.view(-1, 1)[actions.leaf_ux_action_index]
-        _obj_mask = obj_att[actions.field_dom_index]
-        _leaf_mask = leaves_att[actions.leaf_dom_index]
+        _obj_ux_action = safe_bc(
+            obj_ux_action.view(-1, 1), actions.field_ux_action_index
+        )
+        _leaf_ux_action = safe_bc(
+            leaf_ux_action.view(-1, 1), actions.leaf_ux_action_index
+        )
+        _obj_mask = safe_bc(obj_att, actions.field_dom_index)
+        _leaf_mask = safe_bc(leaves_att, actions.leaf_dom_index)
 
         torch.set_printoptions(profile="full")
         assert global_max_pool(_obj_mask, actions.batch).min().item() > 0
@@ -300,6 +315,10 @@ class GNNBase(NNBase):
         assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
         assert global_max_pool(dom_interest, actions.batch).min().item() > 0
         assert global_max_pool(action_consensus, actions.batch).min().item() > 0
+        assert global_max_pool(action_consensus, actions.action_idx)[0].min().item() > 0
+        assert (
+            global_max_pool(action_consensus, actions.action_idx)[1:].max().item() < 1
+        )
         self.last_tensors["action_consensus"] = action_consensus
         self.last_tensors["ux_action_consensus"] = ux_action_consensus
         self.last_tensors["dom_interest"] = dom_interest
@@ -329,9 +348,9 @@ class GNNBase(NNBase):
         )
         x_critic_input = torch.cat(
             [
-                proj_x[objectives_projection.dom_index].detach(),
+                safe_bc(proj_x, objectives_projection.dom_index).detach(),
                 obj_tag_similarities,
-                critic_obj[objectives_projection.field_index],
+                safe_bc(critic_obj, objectives_projection.field_index),
             ],
             dim=1,
         )
@@ -360,11 +379,13 @@ class GNNBase(NNBase):
 
         batch_votes = []
         batch_size = dom.batch.max().item() + 1
+        assert action_batch_idx.max().item() == batch_size - 1
         for i in range(batch_size):
             _m = action_batch_idx == i
             # print(_m.shape)
+            assert _m.sum().item() > 0
             shares = action_votes[_m]
-            assert shares.min().item() > 0, str(i)
+            assert shares.max().item() > 0, "No votes"
             batch_votes.append(shares)
         # print("bv", batch_votes[0].shape)
         return (critic_value, batch_votes, rnn_hxs)
