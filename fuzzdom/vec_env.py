@@ -249,7 +249,7 @@ class GraphGymWrapper(gym.Wrapper):
         # print("Selected:", selected_targets)
         action_id = selected_targets["action_idx"]
         if action_id:
-            print("Not click", action_id)
+            print("Not click", selected_targets)
         # assert action_id == 0, str(action_id)
         field_idx = selected_targets["field_idx"]
         dom_idx = selected_targets["dom_idx"]

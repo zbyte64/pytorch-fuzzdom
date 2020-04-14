@@ -78,6 +78,7 @@ def main():
         base=GNNBase,
         base_kwargs={"dom_encoder": dom_encoder, "recurrent": args.recurrent_policy},
     )
+    # patch distributions to handle node based selection
     actor_critic.dist = NodeObjective()
     actor_critic.to(device)
 

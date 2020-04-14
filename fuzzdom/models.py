@@ -294,18 +294,7 @@ class GNNBase(NNBase):
         torch.set_printoptions(profile="full")
         assert global_max_pool(_obj_mask, actions.batch).min().item() > 0
         assert global_max_pool(_leaf_mask, actions.batch).min().item() > 0
-        # print("action_idx", actions.action_idx.shape)
-        # print(actions.action_idx)
-        # print("field_action_index", actions.field_ux_action_index.shape)
-        # print(actions.field_ux_action_index)
-        # print("p_action", _obj_ux_action.shape)
-        # print(_obj_ux_action)
-        # print(actions.action_idx > 0)
-        # print((actions.action_idx > 0) & (_obj_ux_action > 0).squeeze(1))
-
-        assert _obj_ux_action[actions.action_idx > 0].sum().item() == 0, (
-            _obj_ux_action[actions.action_idx > 0].sum().item()
-        )
+        assert _obj_ux_action[actions.action_idx > 0].sum().item() == 0
         assert _leaf_ux_action[actions.action_idx > 0].sum().item() == 0
 
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
@@ -336,6 +325,9 @@ class GNNBase(NNBase):
         action_batch_idx = global_max_pool(
             actions.batch.view(-1, 1), actions.action_index
         )
+        action_idx = global_max_pool(actions.action_idx, actions.action_index)
+        action_votes[action_idx == 0].min().item() > 0
+        action_votes[action_idx > 0].max().item() < 1e-3
 
         self.last_tensors["obj_att"] = obj_att
         self.last_tensors["leaves_att"] = leaves_att

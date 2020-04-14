@@ -67,7 +67,6 @@ def vectorize_projections(
 
     projections: {proj_domain0: [items], proj_domain1: [items]...}
     """
-
     proj_domains = list(projections.keys())
     combinations = list(itertools.product(*map(enumerate, projections.values())))
     t_edge_index = torch.tensor(list(source.edges)).t().contiguous()

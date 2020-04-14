@@ -5,11 +5,14 @@ import torch
 
 class MixedDistribution:
     # a category with mixed episodic sizes
-    # children are batches
+    # children are batch instances
     def __init__(self, *children):
         self.children = children
 
     def _f(self, f):
+        """
+        Apply a function to each child and cat the results
+        """
         r = []
         for i, child in enumerate(self.children):
             r.append(f(child, i).view(-1, 1))
@@ -51,9 +54,8 @@ class CatDistribution(MixedDistribution):
 
 class NodeObjective(nn.Module):
     def forward(self, x):
-        n = x
         n_dist = []
-        for ni in n:
+        for ni in x:
             # 1 x N
             ni = ni.view(1, -1)
             ni_dist = FixedCategorical(logits=ni)
