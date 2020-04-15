@@ -49,8 +49,11 @@ full_edges = lambda e: torch.cat(
 
 SAFETY = True
 
+if SAFETY:
+    torch.set_printoptions(profile="full")
 
-def safe_bc(x, b):
+
+def safe_bc(x, b, saturated=True):
     """
     Doas a matrix broadcast but checks that the mask size is appropriate
     """
@@ -59,7 +62,11 @@ def safe_bc(x, b):
         assert len(x.shape) > 1
         assert len(b.shape) == 1, "Mask should be 1D"
         m = b.max().item() + 1
-        assert x.shape[0] == m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
+        if saturated:
+            assert x.shape[0] == m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
+        else:
+            # mask takes a subsample
+            assert x.shape[0] >= m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
     return x[b]
 
 
@@ -277,14 +284,13 @@ class GNNBase(NNBase):
             obj_ux_action.view(-1, 1), actions.field_ux_action_index
         )
 
-        torch.set_printoptions(profile="full")
+        if SAFETY:
+            assert (
+                leaf_ux_action.view(-1).shape[0]
+                == actions.leaf_ux_action_index.shape[0]
+            )
+        _leaf_ux_action = leaf_ux_action.view(-1, 1)[actions.leaf_ux_action_index]
 
-        print(leaves.dom_leaf_index)
-        print("#" * 20)
-        print(actions.leaf_ux_action_index)
-        _leaf_ux_action = safe_bc(
-            leaf_ux_action.view(-1, 1), actions.leaf_ux_action_index
-        )
         _obj_mask = safe_bc(obj_att, actions.field_dom_index)
         _leaf_mask = safe_bc(leaves_att, actions.leaf_dom_index)
 
@@ -312,7 +318,7 @@ class GNNBase(NNBase):
         trunk_max = global_max_pool(
             torch.cat([action_consensus, ac_order,], dim=1,), actions.action_index,
         )
-        trunk = torch.cat([trunk_add, trunk_max])
+        trunk = torch.cat([trunk_add, trunk_max], dim=1)
         action_votes = self.actor_gate(trunk)
         # gather the batch ids for the votes
         action_batch_idx = global_max_pool(

@@ -60,6 +60,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
             ("leaf", "dom"),
         ],
     )
+
     e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
     history_data = from_networkx(
@@ -158,7 +159,7 @@ def project_dom_leaves(source: nx.DiGraph):
             data["mask"][index] = 1 if u == p else 0
             data["dom_idx"][index] = src_node["dom_idx"][0]
             data["dom_index"][index] = node_index
-            data["dom_leaf_index"] = torch.tensor(p, dtype=torch.int64)
+            data["dom_leaf_index"][index] = torch.tensor(p, dtype=torch.int64)
 
     data["edge_index"] = torch.cat(edges).view(2, -1)
     data = SubData(
