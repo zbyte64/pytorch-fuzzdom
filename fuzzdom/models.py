@@ -148,8 +148,8 @@ class GNNBase(NNBase):
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        # ux similarity * dom intereset, order X 2 (graph max, add pool)
-        trunk_size = 2 * 2
+        # max/add pool: ux similarity * dom intereset, order
+        trunk_size = 3
         self.actor_gate = nn.Sequential(init_i(nn.Linear(trunk_size, 1)), nn.ReLU())
 
         critic_size = hidden_size + action_one_hot_size + attr_similarity_size
@@ -284,13 +284,9 @@ class GNNBase(NNBase):
             obj_ux_action.view(-1, 1), actions.field_ux_action_index
         )
 
-        if SAFETY:
-            assert (
-                leaf_ux_action.view(-1).shape[0]
-                == actions.leaf_ux_action_index.shape[0]
-            )
-        _leaf_ux_action = leaf_ux_action.view(-1, 1)[actions.leaf_ux_action_index]
-
+        _leaf_ux_action = safe_bc(
+            leaf_ux_action.view(-1, 1), actions.leaf_ux_action_index
+        )
         _obj_mask = safe_bc(obj_att, actions.field_dom_index)
         _leaf_mask = safe_bc(leaves_att, actions.leaf_dom_index)
 
@@ -312,9 +308,7 @@ class GNNBase(NNBase):
         self.last_tensors["ux_action_consensus"] = ux_action_consensus
         self.last_tensors["dom_interest"] = dom_interest
         ac_order = action_consensus * (1 - objectives.order[actions.field_index])
-        trunk_add = global_add_pool(
-            torch.cat([action_consensus, ac_order,], dim=1,), actions.action_index,
-        )
+        trunk_add = global_add_pool(action_consensus, actions.action_index,)
         trunk_max = global_max_pool(
             torch.cat([action_consensus, ac_order,], dim=1,), actions.action_index,
         )
