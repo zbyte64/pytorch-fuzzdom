@@ -58,9 +58,9 @@ def test_mixed_dist_log_probs():
 
 def test_node_objective_mode():
     x = torch.zeros((10,), dtype=torch.float)
-    x[1] = 1.0  # second option
-    x[2] = 1.0  # first option
-    x[9] = 1.0  # last option
+    x[1] = 9000.0  # second option
+    x[2] = 9000.0  # first option
+    x[9] = 9000.0  # last option
     x = x.view(-1, 1)
     batch = torch.tensor([0, 0, 1, 1, 1, 2, 2, 2, 2, 2], dtype=torch.int64)
     dist = NodeObjective().forward((x, batch))
@@ -69,4 +69,5 @@ def test_node_objective_mode():
     assert (mode == truth).min().item() == 1, str(mode)
     sample = dist.sample()
     assert sample.shape == truth.shape
-    assert dist.log_probs(mode).min().item() < 0
+    assert (sample == truth).min().item() == 1, str(sample)
+    assert dist.log_probs(mode).min().item() >= 0

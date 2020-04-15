@@ -47,14 +47,19 @@ full_edges = lambda e: torch.cat(
     [add_self_loops(e)[0], reverse_edges(e)], dim=1
 ).contiguous()
 
+SAFETY = True
+
 
 def safe_bc(x, b):
     """
     Doas a matrix broadcast but checks that the mask size is appropriate
     """
-    assert len(x.shape) > 1
-    assert len(b.shape) == 1, "Mask should be 1D"
-    b.shape[0] == b.max().item() + 1, "Incomplete/Wrong mask"
+    m = None
+    if SAFETY:
+        assert len(x.shape) > 1
+        assert len(b.shape) == 1, "Mask should be 1D"
+        m = b.max().item() + 1
+        assert x.shape[0] == m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
     return x[b]
 
 
@@ -136,8 +141,8 @@ class GNNBase(NNBase):
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        # ux similarity * dom intereset, order
-        trunk_size = 2
+        # ux similarity * dom intereset, order X 2 (graph max, add pool)
+        trunk_size = 2 * 2
         self.actor_gate = nn.Sequential(init_i(nn.Linear(trunk_size, 1)), nn.ReLU())
 
         critic_size = hidden_size + action_one_hot_size + attr_similarity_size
@@ -219,8 +224,7 @@ class GNNBase(NNBase):
         self.last_tensors["leaves_edge_weights"] = leaves_ew
 
         # infer action from dom nodes, but for leaves only
-        # TODO
-        leaf_ux_action = self.dom_ux_action_fn(safe_bc(x, leaves.dom_index))
+        leaf_ux_action = self.dom_ux_action_fn(safe_bc(x, leaves.dom_leaf_index))
 
         # compute an objective dependent dom feats
         # start with word embedding similarities
@@ -256,7 +260,7 @@ class GNNBase(NNBase):
         self.last_tensors["obj_edge_weights"] = obj_ew
         # infer action from query key
 
-        # obj_ux_action = self.objective_ux_action_fn(objectives.key)
+        obj_ux_action = self.objective_ux_action_fn(objectives.key)
 
         bs = objectives.key.shape[0]
         # alt method
@@ -267,24 +271,17 @@ class GNNBase(NNBase):
         ).view(bs, 5)
         obj_ux_action = self.objective_ux_action_fn(sims)
         """
-        # debug: set to click
-        obj_ux_action = torch.zeros(bs, 4, device="cuda:0")
-        obj_ux_action[:, 0] = 1.0
-        leaf_ux_action = torch.zeros(leaves.batch.shape[0], 4, device="cuda:0")
-        leaf_ux_action[:, 0] = 1.0
-        assert actions.field_ux_action_index.max().item() + 1 == bs * 4, str(
-            (actions.field_ux_action_index.max().item(), bs * 4)
-        )
-        _c = torch.arange(0, bs * 4, device="cuda:0").view(-1, 1)[
-            actions.field_ux_action_index
-        ]
-        _m = _c.view(-1) == actions.field_ux_action_index
-        assert _m.min().item() == 1, str(_m)
 
         # project into main trunk
         _obj_ux_action = safe_bc(
             obj_ux_action.view(-1, 1), actions.field_ux_action_index
         )
+
+        torch.set_printoptions(profile="full")
+
+        print(leaves.dom_leaf_index)
+        print("#" * 20)
+        print(actions.leaf_ux_action_index)
         _leaf_ux_action = safe_bc(
             leaf_ux_action.view(-1, 1), actions.leaf_ux_action_index
         )
@@ -292,43 +289,36 @@ class GNNBase(NNBase):
         _leaf_mask = safe_bc(leaves_att, actions.leaf_dom_index)
 
         torch.set_printoptions(profile="full")
-        assert global_max_pool(_obj_mask, actions.batch).min().item() > 0
-        assert global_max_pool(_leaf_mask, actions.batch).min().item() > 0
-        assert _obj_ux_action[actions.action_idx > 0].sum().item() == 0
-        assert _leaf_ux_action[actions.action_idx > 0].sum().item() == 0
+        if SAFETY:
+            assert global_max_pool(_obj_mask, actions.batch).min().item() > 0
+            assert global_max_pool(_leaf_mask, actions.batch).min().item() > 0
 
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
         dom_interest = _obj_mask * _leaf_mask
         action_consensus = torch.relu(ux_action_consensus * dom_interest) ** 0.5
 
-        assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
-        assert global_max_pool(dom_interest, actions.batch).min().item() > 0
-        assert global_max_pool(action_consensus, actions.batch).min().item() > 0
-        assert global_max_pool(action_consensus, actions.action_idx)[0].min().item() > 0
-        assert (
-            global_max_pool(action_consensus, actions.action_idx)[1:].max().item() < 1
-        )
+        if SAFETY:
+            assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
+            assert global_max_pool(dom_interest, actions.batch).min().item() > 0
+            assert global_max_pool(action_consensus, actions.batch).min().item() > 0
+
         self.last_tensors["action_consensus"] = action_consensus
         self.last_tensors["ux_action_consensus"] = ux_action_consensus
         self.last_tensors["dom_interest"] = dom_interest
-        trunk = global_max_pool(
-            torch.cat(
-                [
-                    action_consensus,
-                    action_consensus * (1 - objectives.order[actions.field_index]),
-                ],
-                dim=1,
-            ),
-            actions.action_index,
+        ac_order = action_consensus * (1 - objectives.order[actions.field_index])
+        trunk_add = global_add_pool(
+            torch.cat([action_consensus, ac_order,], dim=1,), actions.action_index,
         )
+        trunk_max = global_max_pool(
+            torch.cat([action_consensus, ac_order,], dim=1,), actions.action_index,
+        )
+        trunk = torch.cat([trunk_add, trunk_max])
         action_votes = self.actor_gate(trunk)
         # gather the batch ids for the votes
         action_batch_idx = global_max_pool(
             actions.batch.view(-1, 1), actions.action_index
         ).view(-1)
         action_idx = global_max_pool(actions.action_idx, actions.action_index)
-        action_votes[action_idx == 0].min().item() > 0.999
-        action_votes[action_idx > 0].sum().item() < 1e-3
 
         self.last_tensors["obj_att"] = obj_att
         self.last_tensors["leaves_att"] = leaves_att

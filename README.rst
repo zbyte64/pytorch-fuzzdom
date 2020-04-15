@@ -63,7 +63,7 @@ Train agent::
 
 Run tensorboard::
 
-  tensorboard --log-dir=./tmp/log
+  tensorboard --logdir=./tmp/log
 
 
 Train since task::

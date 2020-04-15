@@ -141,6 +141,7 @@ def project_dom_leaves(source: nx.DiGraph):
         "mask": torch.zeros((final_size, 1), dtype=torch.float32),
         "dom_idx": torch.zeros((final_size,), dtype=torch.int64),
         "dom_index": torch.zeros((final_size,), dtype=torch.int64),
+        "dom_leaf_index": torch.zeros((final_size,), dtype=torch.int64),
     }
 
     edges = []
@@ -157,10 +158,12 @@ def project_dom_leaves(source: nx.DiGraph):
             data["mask"][index] = 1 if u == p else 0
             data["dom_idx"][index] = src_node["dom_idx"][0]
             data["dom_index"][index] = node_index
-            # data[""] = p
+            data["dom_leaf_index"] = torch.tensor(p, dtype=torch.int64)
 
     data["edge_index"] = torch.cat(edges).view(2, -1)
-    data = SubData(data, dom_index=num_nodes, leaf_index=len(leaves))
+    data = SubData(
+        data, dom_index=num_nodes, leaf_index=len(leaves), dom_leaf_index=num_nodes
+    )
     data.num_nodes = final_size
     return data, leaves
 
@@ -246,9 +249,6 @@ class GraphGymWrapper(gym.Wrapper):
         selected_targets = {k: v for i, c in selected_combo for k, v in c.items()}
         # print("Selected:", selected_targets)
         action_id = selected_targets["action_idx"]
-        if action_id:
-            print("Not click", combination_idx, selected_targets)
-        # assert action_id == 0, str(action_id)
         field_idx = selected_targets["field_idx"]
         dom_idx = selected_targets["dom_idx"]
         dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]

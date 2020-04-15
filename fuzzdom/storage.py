@@ -11,7 +11,7 @@ class StorageReceipt:
     Convert graphs into integers for easier integration
     """
 
-    def __init__(self, device):
+    def __init__(self, device="cpu"):
         self._counter = 0
         self._data = {}
         self.device = device
