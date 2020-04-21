@@ -15,10 +15,18 @@ class FuzzyActionChains(object):
     actions.input_field("username", "BillyJane")
     actions.input_field("password", "pas$word")
     actions.submit()
-    actions.perform()
+    score = actions.perform()
     """
 
-    def __init__(self, driver, utterance: str, agent=None, stop_condition=None):
+    def __init__(
+        self,
+        driver,
+        utterance: str,
+        agent=None,
+        stop_condition=None,
+        finish_value: int = 1,
+        error_value: int = -1,
+    ):
         self.driver = driver
         if agent is None:
             agent = torch.load(os.path.join(PRETRAINED_PATH, "agent.pt"))
@@ -30,12 +38,14 @@ class FuzzyActionChains(object):
         self.utterance = utterance
         self.task_fields = []
         self.stop_condition = stop_condition
+        self.finish_value = finish_value
+        self.error_value = error_value
 
-    def perform(self):
+    def perform(self) -> int:
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(self.async_perform())
+        return loop.run_until_complete(self.async_perform())
 
-    async def async_perform(self):
+    async def async_perform(self) -> int:
         max_steps = len(self.task_fields) * 4
         c = Counter()
         task_fields = OrderedDict()
@@ -47,13 +57,24 @@ class FuzzyActionChains(object):
             else:
                 target = k
             task_fields[target] = c
-        await self.async_run_task(
-            task_fields, self.utterance, max_steps, self.stop_condition
+        return await self.async_run_task(
+            task_fields,
+            self.utterance,
+            max_steps,
+            self.stop_condition,
+            self.finish_value,
+            self.error_value,
         )
 
     async def async_run_task(
-        self, task_fields: dict, utterance: str, max_steps: int, stop_condition
-    ):
+        self,
+        task_fields: dict,
+        utterance: str,
+        max_steps: int,
+        stop_condition,
+        finish_value: int = 1,
+        error_value: int = -1,
+    ) -> int:
         self._env.set_task(task_fields, utterance)
         await self._env.begin_task()
         masks = torch.zeros(1, 1)
@@ -68,9 +89,13 @@ class FuzzyActionChains(object):
 
             # Obser reward and next obs
             obs, reward, done, infos = await self.env.async_step(action)
+            assert value > error_value, f"{value} > {error_value}"
             if stop_condition and await stop_condition():
-                return
+                return value
+            if value >= finish_value:
+                return value
         self.receipts.prune(torch.tensor(obs))
+        return value
 
     def click(self, description: str):
         self.task_fields.append(("click", description))

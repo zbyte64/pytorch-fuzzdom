@@ -28,4 +28,5 @@ async def test_action_chain():
     actions.input_field("username", "BillyJane")
     actions.input_field("password", "pas$word")
     actions.submit()
-    await actions.async_perform()
+    score = await actions.async_perform()
+    assert score > 0
