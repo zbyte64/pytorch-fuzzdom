@@ -167,7 +167,6 @@ class GNNBase(NNBase):
         )
         self.critic_ap_norm = nn.BatchNorm1d(hidden_size)
         self.critic_gate = nn.Sequential(init_xu(nn.Linear(hidden_size * 2, 1)),)
-        self.train()
 
     def forward(self, inputs, rnn_hxs, masks):
         from torch_geometric.data import Batch, Data
