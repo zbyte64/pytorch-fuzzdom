@@ -153,6 +153,7 @@ class GNNBase(NNBase):
             init_xu(nn.Linear(objective_indicator_size, 1)),
             # Compute after max_pool: nn.Tanh()
         )
+
         self.objective_active_conv = SAGEConv(1 + action_one_hot_size, 1)
         # max/add pool: ux similarity * dom intereset
         trunk_size = 2
@@ -164,7 +165,6 @@ class GNNBase(NNBase):
         self.critic_ap_conv = SAGEConv(critic_size, trunk_size)
         self.graph_size_norm = GraphSizeNorm()
         self.critic_gate = nn.Sequential(init_xu(nn.Linear(trunk_size * 2, 1)))
-        self.train()
 
     def forward(self, inputs, rnn_hxs, masks):
         from torch_geometric.data import Batch, Data

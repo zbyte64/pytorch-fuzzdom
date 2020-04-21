@@ -30,6 +30,7 @@ class FuzzyActionChains(object):
         self.driver = driver
         if agent is None:
             agent = torch.load(os.path.join(PRETRAINED_PATH, "agent.pt"))
+            agent.eval()
         self.agent = agent
         self.receipts = StorageReceipt()
         self.agent.receipts = self.receipts
@@ -83,16 +84,17 @@ class FuzzyActionChains(object):
         for i in range(max_steps):
             obs_v = self.receipts.redeem(torch.tensor(obs))
             with torch.no_grad():
-                value, action, action_log_prob, recurrent_hidden_states = self.agent.act(
-                    obs_v, recurrent_hidden_states, masks
-                )
-
-            # Obser reward and next obs
-            obs, reward, done, infos = await self.env.async_step(action)
+                (
+                    value,
+                    action,
+                    action_log_prob,
+                    recurrent_hidden_states,
+                ) = self.agent.act(obs_v, recurrent_hidden_states, masks)
             assert value > error_value, f"{value} > {error_value}"
-            if stop_condition and await stop_condition():
-                return value
             if value >= finish_value:
+                return value
+            obs, infos = await self.env.async_step(action)
+            if stop_condition and await stop_condition():
                 return value
         self.receipts.prune(torch.tensor(obs))
         return value
