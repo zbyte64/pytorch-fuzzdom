@@ -110,10 +110,10 @@ class GNNBase(NNBase):
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
         self.dom_tag = nn.Sequential(
-            init_xu(nn.Linear(text_embed_size, dom_attr_size)), nn.ReLU()
+            init_xu(nn.Linear(text_embed_size, dom_attr_size), "tanh"), nn.Tanh()
         )
         self.dom_classes = nn.Sequential(
-            init_xu(nn.Linear(text_embed_size, dom_attr_size)), nn.ReLU()
+            init_xu(nn.Linear(text_embed_size, dom_attr_size), "tanh"), nn.Tanh()
         )
         self.dom_fn = nn.Sequential(
             init_xu(nn.Linear(query_input_dim, hidden_size - query_input_dim), "tanh"),
@@ -122,17 +122,17 @@ class GNNBase(NNBase):
         self.global_conv = SGConv(hidden_size, hidden_size, K=7)
 
         self.dom_ux_action_fn = nn.Sequential(
-            init_xu(nn.Linear(hidden_size, action_one_hot_size)),
+            init_xu(nn.Linear(hidden_size, action_one_hot_size), "relu"),
             nn.ReLU(),
             init_(nn.Linear(action_one_hot_size, action_one_hot_size)),
-            nn.Sigmoid(),  # nn.Softmax(dim=1),
+            nn.Softmax(dim=1),
         )
         self.leaves_conv = AdditiveMask(hidden_size, 1, K=7)
         # attr similarities
         attr_similarity_size = 8
         self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
         self.objective_int_fn = nn.Sequential(
-            init_xu(nn.Linear(attr_similarity_size, 1)), nn.Sigmoid()
+            init_xu(nn.Linear(attr_similarity_size, 1), "sigmoid"), nn.Sigmoid()
         )
 
         self.objective_target_embeds = nn.Parameter(
@@ -141,30 +141,39 @@ class GNNBase(NNBase):
         self.objective_ux_action_fn = nn.Sequential(
             # init_r(nn.Linear(text_embed_size * 2, text_embed_size)),
             # nn.ReLU(),
-            init_xu(nn.Linear(text_embed_size, action_one_hot_size)),
+            init_xu(nn.Linear(text_embed_size, action_one_hot_size), "sigmoid"),
             nn.Softmax(dim=1),
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        objective_indicator_size = (
+        objective_indicator_input_size = (
             hidden_size + attr_similarity_size + action_one_hot_size
         )
+        objective_indicator_size = 1
         self.objective_indicator_fn = nn.Sequential(
-            init_xu(nn.Linear(objective_indicator_size, 1)),
-            # Compute after max_pool: nn.Tanh()
+            init_xu(
+                nn.Linear(objective_indicator_input_size, objective_indicator_size),
+                "relu",
+            ),
         )
 
-        self.objective_active_conv = SAGEConv(1 + action_one_hot_size, 1)
+        self.objective_active_conv = SAGEConv(
+            objective_indicator_size + action_one_hot_size, 1
+        )
         # max/add pool: ux similarity * dom intereset
         trunk_size = 2
         self.actor_gate = nn.Sequential(init_i(nn.Linear(trunk_size, 1)), nn.ReLU())
 
-        # + objective indicators
-        critic_size = hidden_size + attr_similarity_size + 2 * action_one_hot_size + 1
+        critic_size = (
+            hidden_size  # proj_x
+            + attr_similarity_size
+            + 2 * action_one_hot_size
+            + objective_indicator_size
+        )
         self.critic_mp_conv = SAGEConv(critic_size, trunk_size)
         self.critic_ap_conv = SAGEConv(critic_size, trunk_size)
         self.graph_size_norm = GraphSizeNorm()
-        self.critic_gate = nn.Sequential(init_xu(nn.Linear(trunk_size * 2, 1)))
+        self.critic_gate = nn.Sequential(init_i(nn.Linear(trunk_size * 2, 1)))
 
     def forward(self, inputs, rnn_hxs, masks):
         from torch_geometric.data import Batch, Data
@@ -272,8 +281,8 @@ class GNNBase(NNBase):
         )
         dom_obj_indicator_x = obj_att * dom_obj_indicator_x
         dom_obj_indicator = self.objective_indicator_fn(dom_obj_indicator_x)
-        obj_indicator = global_max_pool(
-            dom_obj_indicator, objectives_projection.field_index
+        obj_indicator = torch.relu(
+            global_max_pool(dom_obj_indicator, objectives_projection.field_index)
         )
         obj_indicator = torch.cat([obj_indicator, obj_ux_action], dim=1)
         # select active objective from indicators
@@ -366,7 +375,7 @@ class GNNBase(NNBase):
         critic_x = torch.cat([critic_mp, critic_ap], dim=1)
         if self.is_recurrent:
             critic_x, rnn_hxs = self._forward_gru(critic_x, rnn_hxs, masks)
-        critic_value = self.critic_gate(critic_x)
+        critic_value = self.critic_gate(-critic_x)
 
         self.last_tensors["x"] = x
         self.last_tensors["trunk"] = trunk

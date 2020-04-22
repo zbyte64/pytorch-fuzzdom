@@ -81,6 +81,9 @@ def main():
     # patch distributions to handle node based selection
     actor_critic.dist = NodeObjective()
     actor_critic.to(device)
+    actor_critic.train()
+    if dom_encoder:
+        dom_encoder.eval()
 
     if args.algo == "a2c":
         agent = algo.A2C_ACKTR(
