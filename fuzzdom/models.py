@@ -20,16 +20,6 @@ from a2c_ppo_acktr.model import NNBase
 from a2c_ppo_acktr.utils import init
 
 
-init_t = lambda m: init(
-    m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0), 2 ** 0.5
-)
-init_r = lambda m: init(
-    m,
-    nn.init.orthogonal_,
-    lambda x: nn.init.constant_(x, 0),
-    nn.init.calculate_gain("relu"),
-)
-init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
 init_i = lambda m: init(
     m,
     lambda x, gain: nn.init.ones_(x),
@@ -41,6 +31,21 @@ init_xu = lambda m, nl="relu": init(
     lambda x: nn.init.constant_(x, 0),
     nn.init.calculate_gain(nl),
 )
+init_xn = lambda m, nl="relu": init(
+    m,
+    nn.init.xavier_normal_,
+    lambda x: nn.init.constant_(x, 0),
+    nn.init.calculate_gain(nl),
+)
+init_ot = lambda m, nl="relu": init(
+    m,
+    nn.init.orthogonal_,
+    lambda x: nn.init.constant_(x, 0),
+    nn.init.calculate_gain(nl),
+)
+init_ = init_ot
+init_r = lambda m: init_ot(m, "relu")
+init_t = lambda m: init_ot(m, "tanh")
 
 reverse_edges = lambda e: torch.stack([e[1], e[0]]).contiguous()
 full_edges = lambda e: torch.cat(
@@ -52,6 +57,7 @@ SAFETY = True
 
 if SAFETY:
     torch.set_printoptions(profile="full")
+    torch.autograd.set_detect_anomaly(True)
 
 
 def safe_bc(x, b, saturated=True):
@@ -74,8 +80,10 @@ def safe_bc(x, b, saturated=True):
 class AdditiveMask(nn.Module):
     def __init__(self, input_dim, mask_dim=1, K=5):
         super(AdditiveMask, self).__init__()
-        self.alpha = nn.Parameter(torch.tensor(0.5))
-        self.x_fn = nn.Sequential(init_t(nn.Linear(input_dim, input_dim)), nn.Tanh())
+        self.alpha = nn.Parameter(torch.tensor(1e-3))
+        self.x_fn = nn.Sequential(
+            init_ot(nn.Linear(input_dim, input_dim), "tanh"), nn.Tanh()
+        )
         self.conv = APPNP(K=K, alpha=self.alpha)
         self.K = K
 
@@ -89,31 +97,92 @@ class AdditiveMask(nn.Module):
         return fill, edge_weights
 
 
+class FixedActionDecoder(nn.Module):
+    def __init__(self):
+        super(FixedActionDecoder, self).__init__()
+        self.default_action = 1  # input goal
+        self.action_words = [
+            ["click", "submit", "target", "focus"],
+            ["select", "text", "noun", "username", "password"],
+            ["copy"],
+            ["paste"],
+        ]
+        from .domx import short_embed
+
+        self.action_index = [i for i, a in enumerate(self.action_words) for word in a]
+        self.action_vectors = torch.cat(
+            [
+                torch.as_tensor(short_embed(word)).reshape(1, -1, 1)
+                for i, a in enumerate(self.action_words)
+                for word in a
+            ],
+            dim=2,
+        )
+
+    def forward(self, embedded_words):
+        batch_size = embedded_words.shape[0]
+        point_size = len(self.action_index)
+        action_size = len(self.action_words)
+        device = embedded_words.device
+        sims = (
+            F.cosine_similarity(
+                embedded_words.reshape(batch_size, -1, 1).repeat(1, 1, point_size),
+                self.action_vectors.repeat(batch_size, 1, 1).to(device),
+                dim=1,
+            )
+            .view(batch_size, point_size)
+            .view(-1)
+        )
+        batch_action_index = (
+            torch.tensor(self.action_index, dtype=torch.long).repeat(batch_size)
+            + action_size
+            * torch.arange(0, batch_size)
+            .view(batch_size, 1)
+            .repeat(1, point_size)
+            .view(-1)
+        ).to(device)
+        batchwise_action_sims = global_max_pool(sims, batch_action_index).view(
+            batch_size, action_size
+        )
+
+        action_idx = (
+            batchwise_action_sims.argmax(dim=1)
+            + torch.arange(0, batch_size, device=device) * action_size
+        ).view(batch_size)
+        ret = torch.zeros(batch_size * action_size, device=device)
+        ret[action_idx] = 1.0
+        return ret.view(batch_size, action_size)
+
+
 class GNNBase(NNBase):
     def __init__(
         self,
         input_dim,
         dom_encoder=None,
         recurrent=False,
-        hidden_size=64,
+        hidden_size=128,
         text_embed_size=25,
     ):
         super(GNNBase, self).__init__(recurrent, hidden_size, hidden_size)
         self.hidden_size = hidden_size
+        self.text_embed_size = text_embed_size
 
         self.dom_encoder = dom_encoder
 
-        dom_attr_size = 5
         action_one_hot_size = 4  # 5
-        query_input_dim = 6 + 2 * dom_attr_size
+        query_input_dim = 6 + 3 * text_embed_size
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
+        self.action_decoder = FixedActionDecoder()
         self.dom_tag = nn.Sequential(
-            init_xu(nn.Linear(text_embed_size, dom_attr_size), "tanh"), nn.Tanh()
+            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU(),
         )
         self.dom_classes = nn.Sequential(
-            init_xu(nn.Linear(text_embed_size, dom_attr_size), "tanh"), nn.Tanh()
+            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU(),
+        )
+        self.dom_text = nn.Sequential(
+            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU(),
         )
         self.dom_fn = nn.Sequential(
             init_xu(nn.Linear(query_input_dim, hidden_size - query_input_dim), "tanh"),
@@ -121,45 +190,42 @@ class GNNBase(NNBase):
         )
         self.global_conv = SGConv(hidden_size, hidden_size, K=7)
 
+        self.dom_ux_action_decoder_weight = nn.Parameter(
+            torch.ones(3, action_one_hot_size) * 0.5
+        )
         self.dom_ux_action_fn = nn.Sequential(
-            init_xu(nn.Linear(hidden_size, action_one_hot_size), "relu"),
-            nn.ReLU(),
-            init_(nn.Linear(action_one_hot_size, action_one_hot_size)),
+            init_ot(nn.Linear(action_one_hot_size, action_one_hot_size), "linear"),
             nn.Softmax(dim=1),
         )
         self.leaves_conv = AdditiveMask(hidden_size, 1, K=7)
         # attr similarities
-        attr_similarity_size = 8
+        attr_similarity_size = 4
         self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
         self.objective_int_fn = nn.Sequential(
-            init_xu(nn.Linear(attr_similarity_size, 1), "sigmoid"), nn.Sigmoid()
+            init_xn(nn.Linear(action_one_hot_size, attr_similarity_size), "relu"),
+            nn.ReLU(),
+        )
+        self.objective_comp_fn = nn.Sequential(
+            init_xn(nn.Linear(action_one_hot_size, attr_similarity_size), "relu"),
+            nn.ReLU(),
         )
 
-        self.objective_target_embeds = nn.Parameter(
-            torch.rand(action_one_hot_size, text_embed_size)
-        )
         self.objective_ux_action_fn = nn.Sequential(
-            # init_r(nn.Linear(text_embed_size * 2, text_embed_size)),
+            # init_r(nn.Linear(text_embed_size, text_embed_size)),
             # nn.ReLU(),
-            init_xu(nn.Linear(text_embed_size, action_one_hot_size), "sigmoid"),
-            nn.Softmax(dim=1),
+            self.action_decoder,
+            # init_t(nn.Linear(action_one_hot_size, action_one_hot_size)),
+            # nn.Softmax(dim=1),
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        objective_indicator_input_size = (
-            hidden_size + attr_similarity_size + action_one_hot_size
-        )
+        objective_indicator_input_size = 1 + action_one_hot_size
         objective_indicator_size = 1
         self.objective_indicator_fn = nn.Sequential(
-            init_xu(
-                nn.Linear(objective_indicator_input_size, objective_indicator_size),
-                "relu",
-            ),
+            init_i(nn.Linear(objective_indicator_input_size, objective_indicator_size)),
         )
 
-        self.objective_active_conv = SAGEConv(
-            objective_indicator_size + action_one_hot_size, 1
-        )
+        self.objective_active_conv = SAGEConv(objective_indicator_size + 1, 1)
         # max/add pool: ux similarity * dom intereset
         trunk_size = 2
         self.actor_gate = nn.Sequential(init_i(nn.Linear(trunk_size, 1)), nn.ReLU())
@@ -186,8 +252,9 @@ class GNNBase(NNBase):
 
         x = torch.cat(
             [
-                self.dom_tag(dom.tag),
-                self.dom_classes(dom.classes),
+                dom.tag,
+                dom.classes,
+                dom.text,
                 dom.rx,
                 dom.ry,
                 dom.width * dom.height,
@@ -199,23 +266,25 @@ class GNNBase(NNBase):
         ).clamp(-1, 1)
 
         if self.dom_encoder:
-            _add_x = self.dom_encoder(
-                torch.cat(
-                    [
-                        dom.text,
-                        dom.value,
-                        dom.tag,
-                        dom.classes,
-                        dom.rx,
-                        dom.ry,
-                        dom.width,
-                        dom.height,
-                        dom.top,
-                        dom.left,
-                    ],
-                    dim=1,
-                ),
-                add_self_loops(dom.edge_index)[0],
+            _add_x = torch.tanh(
+                self.dom_encoder(
+                    torch.cat(
+                        [
+                            dom.text,
+                            dom.value,
+                            dom.tag,
+                            dom.classes,
+                            dom.rx,
+                            dom.ry,
+                            dom.width,
+                            dom.height,
+                            dom.top,
+                            dom.left,
+                        ],
+                        dim=1,
+                    ),
+                    add_self_loops(dom.edge_index)[0],
+                )
             )
             x = torch.cat([x, _add_x], dim=1)
 
@@ -224,6 +293,7 @@ class GNNBase(NNBase):
         x = torch.cat([x, _add_x], dim=1)
         proj_x = self.global_conv(x, full_edges(dom.edge_index))
         self.last_tensors["proj_x"] = proj_x
+        full_x = x + proj_x
 
         # leaves are targetable elements
         leaf_t_mask = leaves.mask.type(torch.float)
@@ -233,11 +303,36 @@ class GNNBase(NNBase):
             leaf_t_mask,
             add_self_loops(reverse_edges(leaves.edge_index))[0],
         )
-        leaves_att = leaves_att + leaf_t_mask
+        leaves_att = torch.relu(leaves_att + leaf_t_mask)
         self.last_tensors["leaves_edge_weights"] = leaves_ew
 
-        # infer action from dom nodes, but for leaves only
-        leaf_ux_action = self.dom_ux_action_fn(safe_bc(proj_x, leaves.dom_leaf_index))
+        # infer action from dom nodes
+        full_dom_tag = full_x[:, 0 : self.text_embed_size]
+        full_dom_classes = full_x[:, self.text_embed_size : 2 * self.text_embed_size]
+        full_dom_text = full_x[:, 2 * self.text_embed_size : 3 * self.text_embed_size]
+        dom_ux_action = (
+            self.dom_tag(full_dom_tag) * (1 - self.dom_ux_action_decoder_weight[0])
+            + self.action_decoder(full_dom_tag) * self.dom_ux_action_decoder_weight[0]
+            + self.dom_classes(full_dom_classes)
+            * (1 - self.dom_ux_action_decoder_weight[1])
+            + self.action_decoder(full_dom_classes)
+            * self.dom_ux_action_decoder_weight[1]
+            + self.dom_text(full_dom_text) * (1 - self.dom_ux_action_decoder_weight[2])
+            + self.action_decoder(full_dom_text) * self.dom_ux_action_decoder_weight[2]
+        )
+        dom_ux_action = self.dom_ux_action_fn(dom_ux_action)
+        # for dom action input == paste
+        _dom_ux_action_input = (dom_ux_action[:, 1] + dom_ux_action[:, 3]).view(-1, 1)
+        dom_ux_action = torch.cat(
+            [
+                dom_ux_action[:, 0].view(-1, 1),
+                _dom_ux_action_input,
+                dom_ux_action[:, 2].view(-1, 1),
+                _dom_ux_action_input,
+            ],
+            dim=1,
+        )
+        leaf_ux_action = safe_bc(dom_ux_action, leaves.dom_leaf_index)
 
         # compute an objective dependent dom feats
         # start with word embedding similarities
@@ -251,16 +346,17 @@ class GNNBase(NNBase):
                 obj_sim("text", "query"),
                 obj_sim("value", "key"),
                 obj_sim("value", "query"),
-                obj_sim("tag", "key"),
-                obj_sim("tag", "query"),
-                obj_sim("classes", "key"),
-                obj_sim("classes", "query"),
             ],
             dim=1,
         )
-        obj_att_input = obj_tag_similarities.max(dim=1, keepdim=True)[
-            0
-        ]  # self.objective_int_fn(obj_tag_similarities)
+        # infer action from query key
+        obj_ux_action = self.objective_ux_action_fn(objectives.key)
+        dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
+        # keep negative values, blockades signals
+        obj_att_input = (
+            self.objective_int_fn(dom_obj_ux_action) * obj_tag_similarities
+        ).sum(dim=1, keepdim=True)
+
         self.last_tensors["obj_att_input"] = obj_att_input
         self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
         obj_att, obj_ew = self.objective_conv(
@@ -268,25 +364,30 @@ class GNNBase(NNBase):
             obj_att_input,
             add_self_loops(objectives_projection.edge_index)[0],
         )
-        obj_att = obj_att + obj_att_input
-
-        # infer action from query key
-        obj_ux_action = self.objective_ux_action_fn(objectives.key)
+        obj_att = torch.relu(obj_att + obj_att_input)
 
         # compute objective completeness indicators from DOM
-        dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
-        dom_obj_indicator_x = safe_bc(x, objectives_projection.dom_index)
-        dom_obj_indicator_x = torch.cat(
-            [dom_obj_indicator_x, obj_tag_similarities, dom_obj_ux_action], dim=1
+        dom_dom_obj_ux_action = safe_bc(dom_ux_action, objectives_projection.dom_index)
+        dom_obj_comp = torch.relu(
+            (self.objective_comp_fn(dom_obj_ux_action) * obj_tag_similarities).sum(
+                dim=1, keepdim=True
+            )
         )
-        dom_obj_indicator_x = obj_att * dom_obj_indicator_x
-        dom_obj_indicator = self.objective_indicator_fn(dom_obj_indicator_x)
+
+        dom_obj_indicator_x = torch.cat(
+            [dom_obj_comp, (dom_obj_ux_action * dom_dom_obj_ux_action).detach()], dim=1,
+        )
+        dom_obj_indicator = self.objective_indicator_fn(dom_obj_indicator_x) * obj_att
         obj_indicator = torch.relu(
             global_max_pool(dom_obj_indicator, objectives_projection.field_index)
         )
-        obj_indicator = torch.cat([obj_indicator, obj_ux_action], dim=1)
+        # higher completion / order = less activation
+        obj_indicator_order = torch.cat([-obj_indicator, 1 - objectives.order], dim=1,)
         # select active objective from indicators
-        obj_active = self.objective_active_conv(obj_indicator, objectives.edge_index)
+        obj_active = (
+            self.objective_active_conv(obj_indicator_order, objectives.edge_index)
+            - obj_indicator
+        )
         obj_active = softmax(obj_active, objectives.batch)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
@@ -310,9 +411,7 @@ class GNNBase(NNBase):
 
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
         dom_interest = _obj_mask * _leaf_mask
-        action_consensus = (
-            torch.relu(ux_action_consensus * dom_interest * _obj_active) ** 0.5
-        )
+        action_consensus = torch.relu(ux_action_consensus * dom_interest * _obj_active)
 
         if SAFETY:
             assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
@@ -341,13 +440,11 @@ class GNNBase(NNBase):
         self.last_tensors["leaf_ux_action"] = leaf_ux_action
 
         # critic senses how much overlaps and goal completion
-        citic_dom_ux_action = safe_bc(
-            self.dom_ux_action_fn(proj_x), objectives_projection.dom_index
-        )
+        citic_dom_ux_action = safe_bc(dom_ux_action, objectives_projection.dom_index)
         x_critic_input = torch.relu(
             torch.cat(
                 [
-                    safe_bc(proj_x, objectives_projection.dom_index),
+                    safe_bc(full_x, objectives_projection.dom_index),
                     obj_tag_similarities,
                     safe_bc(obj_ux_action, objectives_projection.field_index),
                     citic_dom_ux_action,
