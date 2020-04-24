@@ -188,7 +188,8 @@ class GNNBase(NNBase):
             init_xu(nn.Linear(query_input_dim, hidden_size - query_input_dim), "tanh"),
             nn.Tanh(),
         )
-        self.global_conv = SGConv(hidden_size, hidden_size, K=7)
+        self.global_alpha = nn.Parameter(torch.tensor(0.1))
+        self.global_conv = APPNP(K=7, alpha=self.global_alpha, bias=False)
 
         self.dom_ux_action_decoder_weight = nn.Parameter(
             torch.ones(3, action_one_hot_size) * 0.5
@@ -199,7 +200,13 @@ class GNNBase(NNBase):
         )
         self.leaves_conv = AdditiveMask(hidden_size, 1, K=7)
         # attr similarities
-        attr_similarity_size = 4
+        attr_similarity_size = 8
+        self.objective_dom_tag = nn.Sequential(
+            init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU(),
+        )
+        self.objective_dom_class = nn.Sequential(
+            init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU(),
+        )
         self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
         self.objective_int_fn = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, attr_similarity_size), "relu"),
@@ -222,10 +229,10 @@ class GNNBase(NNBase):
         objective_indicator_input_size = 1 + action_one_hot_size
         objective_indicator_size = 1
         self.objective_indicator_fn = nn.Sequential(
-            init_i(nn.Linear(objective_indicator_input_size, objective_indicator_size)),
+            init_i(nn.Linear(objective_indicator_input_size, objective_indicator_size))
         )
 
-        self.objective_active_conv = SAGEConv(objective_indicator_size + 1, 1)
+        self.objective_active_conv = SGConv(objective_indicator_size + 1, 1, K=5)
         # max/add pool: ux similarity * dom intereset
         trunk_size = 2
         self.actor_gate = nn.Sequential(init_i(nn.Linear(trunk_size, 1)), nn.ReLU())
@@ -303,7 +310,7 @@ class GNNBase(NNBase):
             leaf_t_mask,
             add_self_loops(reverse_edges(leaves.edge_index))[0],
         )
-        leaves_att = torch.relu(leaves_att + leaf_t_mask)
+        leaves_att = torch.relu(leaves_att) + leaf_t_mask
         self.last_tensors["leaves_edge_weights"] = leaves_ew
 
         # infer action from dom nodes
@@ -339,16 +346,38 @@ class GNNBase(NNBase):
         obj_sim = lambda tag, obj: F.cosine_similarity(
             safe_bc(dom[tag], objectives_projection.dom_index),
             safe_bc(objectives[obj], objectives_projection.field_index),
-        ).view(-1, 1)
-        obj_tag_similarities = torch.cat(
-            [
-                obj_sim("text", "key"),
-                obj_sim("text", "query"),
-                obj_sim("value", "key"),
-                obj_sim("value", "query"),
-            ],
             dim=1,
+        ).view(-1, 1)
+        obj_dom_tag = safe_bc(
+            self.objective_dom_tag(dom.tag), objectives_projection.dom_index
         )
+        obj_tag_sim = obj_dom_tag * safe_bc(
+            objectives.query, objectives_projection.field_index
+        )
+        obj_tag_similarities = torch.relu(
+            torch.cat(
+                [
+                    obj_sim("text", "key"),
+                    obj_sim("text", "query"),
+                    obj_sim("value", "key"),
+                    obj_sim("value", "query"),
+                    obj_sim("classes", "key"),
+                    obj_sim("classes", "query"),
+                    obj_sim("tag", "key"),
+                    obj_sim("tag", "query"),
+                ],
+                dim=1,
+            )
+        )
+        if SAFETY:
+            assert (
+                global_max_pool(
+                    obj_tag_similarities.max(dim=1)[0], objectives_projection.batch
+                )
+                .min()
+                .item()
+                > 0
+            )
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(objectives.key)
         dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
@@ -356,6 +385,11 @@ class GNNBase(NNBase):
         obj_att_input = (
             self.objective_int_fn(dom_obj_ux_action) * obj_tag_similarities
         ).sum(dim=1, keepdim=True)
+        if SAFETY:
+            assert (
+                global_max_pool(obj_att_input, objectives_projection.batch).min().item()
+                > 0
+            )
 
         self.last_tensors["obj_att_input"] = obj_att_input
         self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
@@ -364,7 +398,7 @@ class GNNBase(NNBase):
             obj_att_input,
             add_self_loops(objectives_projection.edge_index)[0],
         )
-        obj_att = torch.relu(obj_att + obj_att_input)
+        obj_att = torch.relu(obj_att) + obj_att_input
 
         # compute objective completeness indicators from DOM
         dom_dom_obj_ux_action = safe_bc(dom_ux_action, objectives_projection.dom_index)

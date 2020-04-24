@@ -58,7 +58,7 @@ Train DOM Autoencoder::
 
 Train agent::
 
-  docker-compose run app python -m fuzzdom.train.graph --num-processes=16 --num-steps=32 --log-interval=1 --algo=ppo --env-name=levels --cuda
+  docker-compose run app python -m fuzzdom.train.graph --num-processes=16 --num-steps=32 --log-interval=1 --algo=ppo --env-name=levels
 
 
 Run tensorboard::
