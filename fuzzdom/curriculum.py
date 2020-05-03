@@ -28,7 +28,7 @@ class LevelTracker:
             stats["pass"] += 1
             self.current_level_idx += 1
             if self.current_level_idx == len(self.levels):
-                self.current_level_idx = random.randint(0, len(self.levels) - 1)
+                self.current_level_idx = 0  # random.randint(0, len(self.levels) - 1)
         else:
             stats["fail"] += 1
             self.current_level_idx -= 1
@@ -47,21 +47,19 @@ def _miniwob_path(f):
 
 MINIWOB_CHALLENGES = _miniwob_path(
     [
-        ["click-link", "navigate-tree"],
-        ["click-dialog-2", "click-widget"],
-        ["click-option"],
-        ["click-checkboxes"],  # "click-checkboxes-large"],
-        ["choose-list"],
-        ["enter-text", "enter-text-dynamic", "enter-password"],
-        ["login-user", "login-user-popup"],
+        ["click-link", "click-tab", "click-button", "click-dialog-2", "click-widget"],
+        ["click-button-sequence", "choose-list", "click-option", "click-checkboxes"],
+        ["enter-text", "enter-text-dynamic"],  # "enter-password"],
+        # "click-checkboxes-large"],
+        # "navigate-tree"],
+        ["login-user", "login-user-popup", "multi-layouts", "multi-orderings"],
         # ["social-media", "social-media-all", "social-media-some"],
-        ["click-tab-2", "click-tab-2-medium"],  # "click-tab-2-hard"],
+        # ["click-tab-2", "click-tab-2-medium"],  # "click-tab-2-hard"],
         # ["email-inbox-delete", "email-inbox-forward", "email-inbox-important", "email-inbox-noscroll", "email-inbox-reply", "email-inbox-star-reply", "email-inbox"],
         # ["search-engine"],
-        ["use-autocomplete"],
+        # ["use-autocomplete"],
         # ["choose-date-easy", "choose-date-medium", "choose-date"],
-        # ["multi-layouts", "multi-orderings"],
-        ["read-table", "read-table-2"],
+        # ["read-table", "read-table-2"],
         # ["book-flight-nodelay"],
         # TODO requires hover action:
         # ["click-menu", "click-menu-2"],

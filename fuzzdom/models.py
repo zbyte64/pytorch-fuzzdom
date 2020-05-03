@@ -52,6 +52,36 @@ full_edges = lambda e: torch.cat(
     [add_self_loops(e)[0], reverse_edges(e)], dim=1
 ).contiguous()
 
+
+def global_min_pool(x, batch, size=None):
+    from torch_scatter import scatter
+
+    size = batch.max().item() + 1 if size is None else size
+    return scatter(x, batch, dim=0, dim_size=size, reduce="min")
+
+
+def global_norm_pool(x, batch, eps=1e-6):
+    _max = global_max_pool(x, batch)[batch]
+    _min = global_min_pool(x, batch)[batch]
+    return (x - _min + eps) / (_max - _min + eps)
+
+
+def pack_as_sequence(x, batch):
+    from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
+
+    seq = [x[batch == i] for i in range(batch().max().item() + 1)]
+    x_lens = [s.shape[0] for s in seq]
+    seq_pad = pad_sequence(seq, batch_first=False, padding_value=0.0)
+    seq_pac = pack_padded_sequence(
+        seq_pad, x_lens, batch_first=False, enforce_sorted=True
+    )
+    return seq_pac, x_lens
+
+
+def unpack_sequence(output_packed, x_lens):
+    return torch.cat([output_packed[:l, i] for i, l in enumerate(x_lens)], dim=1)
+
+
 # do extra checks, useful for validating model changes
 SAFETY = True
 
@@ -232,21 +262,34 @@ class GNNBase(NNBase):
             init_i(nn.Linear(objective_indicator_input_size, objective_indicator_size))
         )
 
+        self.objective_active = nn.GRU(
+            input_size=objective_indicator_size, hidden_size=2, num_layers=1
+        )
         self.objective_active_conv = SGConv(objective_indicator_size + 1, 1, K=5)
+        self.objective_active_fn = nn.Sequential(init_i(nn.Linear(3, 1)), nn.ReLU(),)
         # max/add pool: ux similarity * dom intereset
         trunk_size = 2
         self.actor_gate = nn.Sequential(init_i(nn.Linear(trunk_size, 1)), nn.ReLU())
 
         critic_size = (
-            hidden_size  # proj_x
+            hidden_size
             + attr_similarity_size
             + 2 * action_one_hot_size
             + objective_indicator_size
+            + 1  # obj att
         )
-        self.critic_mp_conv = SAGEConv(critic_size, trunk_size)
-        self.critic_ap_conv = SAGEConv(critic_size, trunk_size)
+        self.critic_mp_score = nn.Sequential(
+            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"),
+            nn.ReLU(),
+        )
+        self.critic_ap_score = nn.Sequential(
+            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"),
+            nn.ReLU(),
+        )
         self.graph_size_norm = GraphSizeNorm()
-        self.critic_gate = nn.Sequential(init_i(nn.Linear(trunk_size * 2, 1)))
+        self.critic_gate = nn.Sequential(
+            init_i(nn.Linear(2 * objective_indicator_size, 1))
+        )
 
     def forward(self, inputs, rnn_hxs, masks):
         from torch_geometric.data import Batch, Data
@@ -381,9 +424,13 @@ class GNNBase(NNBase):
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(objectives.key)
         dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
-        # keep negative values, blockades signals
+        # ux action tag sensitivities
         obj_att_input = (
-            self.objective_int_fn(dom_obj_ux_action) * obj_tag_similarities
+            global_norm_pool(
+                self.objective_int_fn(dom_obj_ux_action),
+                objectives_projection.field_index,
+            )
+            * obj_tag_similarities
         ).sum(dim=1, keepdim=True)
         if SAFETY:
             assert (
@@ -401,30 +448,50 @@ class GNNBase(NNBase):
         obj_att = torch.relu(obj_att) + obj_att_input
 
         # compute objective completeness indicators from DOM
+        # indicators are trained by critic
+        critic_dom_ux_action = dom_ux_action.detach()
+        critic_dom_obj_ux_action = dom_obj_ux_action.detach()
+        critic_obj_att = obj_att.detach()
         dom_dom_obj_ux_action = safe_bc(dom_ux_action, objectives_projection.dom_index)
-        dom_obj_comp = torch.relu(
-            (self.objective_comp_fn(dom_obj_ux_action) * obj_tag_similarities).sum(
-                dim=1, keepdim=True
-            )
-        )
+        # [0 - inf]
+        dom_obj_comp = (
+            self.objective_comp_fn(dom_obj_ux_action) * obj_tag_similarities
+        ).sum(dim=1, keepdim=True)
+
+        self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
         dom_obj_indicator_x = torch.cat(
-            [dom_obj_comp, (dom_obj_ux_action * dom_dom_obj_ux_action).detach()], dim=1,
+            [dom_obj_comp, dom_obj_ux_action * dom_dom_obj_ux_action,], dim=1,
         )
-        dom_obj_indicator = self.objective_indicator_fn(dom_obj_indicator_x) * obj_att
+        dom_obj_indicator = (
+            global_norm_pool(
+                self.objective_indicator_fn(dom_obj_indicator_x),
+                objectives_projection.field_index,
+            )
+            * critic_obj_att
+        )
         obj_indicator = torch.relu(
             global_max_pool(dom_obj_indicator, objectives_projection.field_index)
         )
-        # higher completion / order = less activation
-        obj_indicator_order = torch.cat([-obj_indicator, 1 - objectives.order], dim=1,)
+        critic_obj_indicator = obj_indicator.detach()
+        # invert order
+        obj_indicator_order = torch.cat([obj_indicator, 1 - objectives.order], dim=1)
         # select active objective from indicators
-        obj_active = (
-            self.objective_active_conv(obj_indicator_order, objectives.edge_index)
-            - obj_indicator
+        obj_active = self.objective_active_fn(
+            torch.cat(
+                [
+                    self.objective_active_conv(
+                        obj_indicator_order, objectives.edge_index
+                    ),
+                    obj_indicator_order,
+                ],
+                dim=1,
+            )
         )
         obj_active = softmax(obj_active, objectives.batch)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
+        self.last_tensors["obj_indicator"] = obj_indicator
         self.last_tensors["obj_active"] = obj_active
         self.last_tensors["obj_edge_weights"] = obj_ew
 
@@ -474,26 +541,30 @@ class GNNBase(NNBase):
         self.last_tensors["leaf_ux_action"] = leaf_ux_action
 
         # critic senses how much overlaps and goal completion
-        citic_dom_ux_action = safe_bc(dom_ux_action, objectives_projection.dom_index)
-        x_critic_input = torch.relu(
-            torch.cat(
-                [
-                    safe_bc(full_x, objectives_projection.dom_index),
-                    obj_tag_similarities,
-                    safe_bc(obj_ux_action, objectives_projection.field_index),
-                    citic_dom_ux_action,
-                    dom_obj_indicator,
-                ],
-                dim=1,
-            )
-            * obj_att
-        ).detach()
-        critic_mp = self.critic_mp_conv(
-            x_critic_input, objectives_projection.edge_index
+        critic_dom_ux_action = safe_bc(
+            dom_ux_action.detach(), objectives_projection.dom_index
         )
-        critic_ap = self.critic_ap_conv(
-            x_critic_input, objectives_projection.edge_index
+        critic_obj_ux_action = safe_bc(
+            obj_ux_action.detach(), objectives_projection.field_index
         )
+        critic_obj_indicator = safe_bc(
+            critic_obj_indicator, objectives_projection.field_index
+        )
+        critic_full_x = safe_bc(full_x.detach(), objectives_projection.dom_index)
+        x_critic_input = torch.cat(
+            [
+                critic_full_x,
+                obj_tag_similarities,
+                critic_obj_ux_action,
+                critic_dom_ux_action,
+                critic_obj_indicator,
+                critic_obj_att,
+            ],
+            dim=1,
+        )
+        # critic supresses difficulty when steps are indicated
+        critic_mp = self.critic_mp_score(x_critic_input)
+        critic_ap = self.critic_ap_score(x_critic_input)
 
         # max/add objective difficulty in batch
         critic_mp = torch.relu(global_max_pool(critic_mp, objectives_projection.batch))
