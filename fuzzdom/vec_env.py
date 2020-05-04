@@ -90,9 +90,17 @@ def encode_fields(fields):
         ke = short_embed(key)
         ve = short_embed(value)
         order = (i + 1) / n
-
+        is_last = 1.0 if i + 1 == n else 0.0
         # TODO action_idx & action ?
-        o.add_node(i, key=ke, query=ve, field_idx=(i,), index=i, order=(order,))
+        o.add_node(
+            i,
+            key=ke,
+            query=ve,
+            field_idx=(i,),
+            index=i,
+            order=(order,),
+            is_last=(is_last,),
+        )
         if i:
             o.add_edge(i - 1, i)
     return o

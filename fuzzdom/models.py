@@ -69,17 +69,22 @@ def global_norm_pool(x, batch, eps=1e-6):
 def pack_as_sequence(x, batch):
     from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
-    seq = [x[batch == i] for i in range(batch().max().item() + 1)]
-    x_lens = [s.shape[0] for s in seq]
+    seq = [x[batch == i] for i in range(batch.max().item() + 1)]
+    x_lens = [int(s.shape[0]) for s in seq]
     seq_pad = pad_sequence(seq, batch_first=False, padding_value=0.0)
     seq_pac = pack_padded_sequence(
-        seq_pad, x_lens, batch_first=False, enforce_sorted=True
+        seq_pad, x_lens, batch_first=False, enforce_sorted=False
     )
-    return seq_pac, x_lens
+    return seq_pac
 
 
-def unpack_sequence(output_packed, x_lens):
-    return torch.cat([output_packed[:l, i] for i, l in enumerate(x_lens)], dim=1)
+def unpack_sequence(output_packed):
+    from torch.nn.utils.rnn import pad_packed_sequence
+
+    s, x_lens = pad_packed_sequence(output_packed, batch_first=True)
+    return torch.cat(
+        [s[i, :l].view(l) for i, l in enumerate(x_lens.tolist())], dim=0
+    ).view(-1, 1)
 
 
 # do extra checks, useful for validating model changes
@@ -262,11 +267,11 @@ class GNNBase(NNBase):
             init_i(nn.Linear(objective_indicator_input_size, objective_indicator_size))
         )
 
+        # + pos
+        objective_active_size = action_one_hot_size + objective_indicator_size + 2
         self.objective_active = nn.GRU(
-            input_size=objective_indicator_size, hidden_size=2, num_layers=1
+            input_size=objective_active_size, hidden_size=1, num_layers=1,
         )
-        self.objective_active_conv = SGConv(objective_indicator_size + 1, 1, K=5)
-        self.objective_active_fn = nn.Sequential(init_i(nn.Linear(3, 1)), nn.ReLU(),)
         # max/add pool: ux similarity * dom intereset
         trunk_size = 2
         self.actor_gate = nn.Sequential(init_i(nn.Linear(trunk_size, 1)), nn.ReLU())
@@ -426,11 +431,7 @@ class GNNBase(NNBase):
         dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
         # ux action tag sensitivities
         obj_att_input = (
-            global_norm_pool(
-                self.objective_int_fn(dom_obj_ux_action),
-                objectives_projection.field_index,
-            )
-            * obj_tag_similarities
+            self.objective_int_fn(dom_obj_ux_action) * obj_tag_similarities
         ).sum(dim=1, keepdim=True)
         if SAFETY:
             assert (
@@ -464,30 +465,20 @@ class GNNBase(NNBase):
             [dom_obj_comp, dom_obj_ux_action * dom_dom_obj_ux_action,], dim=1,
         )
         dom_obj_indicator = (
-            global_norm_pool(
-                self.objective_indicator_fn(dom_obj_indicator_x),
-                objectives_projection.field_index,
-            )
-            * critic_obj_att
+            self.objective_indicator_fn(dom_obj_indicator_x) * critic_obj_att
         )
         obj_indicator = torch.relu(
             global_max_pool(dom_obj_indicator, objectives_projection.field_index)
         )
         critic_obj_indicator = obj_indicator.detach()
         # invert order
-        obj_indicator_order = torch.cat([obj_indicator, 1 - objectives.order], dim=1)
-        # select active objective from indicators
-        obj_active = self.objective_active_fn(
-            torch.cat(
-                [
-                    self.objective_active_conv(
-                        obj_indicator_order, objectives.edge_index
-                    ),
-                    obj_indicator_order,
-                ],
-                dim=1,
-            )
+        obj_indicator_order = torch.cat(
+            [obj_ux_action, obj_indicator, 1 - objectives.order, objectives.is_last],
+            dim=1,
         )
+        obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
+        obj_active_seq, _ = self.objective_active(obj_ind_seq)
+        obj_active = unpack_sequence(obj_active_seq)
         obj_active = softmax(obj_active, objectives.batch)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
