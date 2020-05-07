@@ -2,7 +2,6 @@ import torch
 from torch import nn
 from torch_geometric.nn import (
     SAGEConv,
-    SGConv,
     APPNP,
     global_max_pool,
     global_add_pool,
@@ -14,77 +13,11 @@ from torch_geometric.nn import (
 import torch.nn.functional as F
 from torch_geometric.utils import add_self_loops
 from torch_geometric.utils import softmax
-import math
 
 from a2c_ppo_acktr.model import NNBase
 from a2c_ppo_acktr.utils import init
 
-
-init_i = lambda m: init(
-    m,
-    lambda x, gain: nn.init.ones_(x),
-    lambda x: nn.init.constant_(x, 0) if x else None,
-)
-init_xu = lambda m, nl="relu": init(
-    m,
-    nn.init.xavier_uniform_,
-    lambda x: nn.init.constant_(x, 0),
-    nn.init.calculate_gain(nl),
-)
-init_xn = lambda m, nl="relu": init(
-    m,
-    nn.init.xavier_normal_,
-    lambda x: nn.init.constant_(x, 0),
-    nn.init.calculate_gain(nl),
-)
-init_ot = lambda m, nl="relu": init(
-    m,
-    nn.init.orthogonal_,
-    lambda x: nn.init.constant_(x, 0),
-    nn.init.calculate_gain(nl),
-)
-init_ = init_ot
-init_r = lambda m: init_ot(m, "relu")
-init_t = lambda m: init_ot(m, "tanh")
-
-reverse_edges = lambda e: torch.stack([e[1], e[0]]).contiguous()
-full_edges = lambda e: torch.cat(
-    [add_self_loops(e)[0], reverse_edges(e)], dim=1
-).contiguous()
-
-
-def global_min_pool(x, batch, size=None):
-    from torch_scatter import scatter
-
-    size = batch.max().item() + 1 if size is None else size
-    return scatter(x, batch, dim=0, dim_size=size, reduce="min")
-
-
-def global_norm_pool(x, batch, eps=1e-6):
-    _max = global_max_pool(x, batch)[batch]
-    _min = global_min_pool(x, batch)[batch]
-    return (x - _min + eps) / (_max - _min + eps)
-
-
-def pack_as_sequence(x, batch):
-    from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-
-    seq = [x[batch == i] for i in range(batch.max().item() + 1)]
-    x_lens = [int(s.shape[0]) for s in seq]
-    seq_pad = pad_sequence(seq, batch_first=False, padding_value=0.0)
-    seq_pac = pack_padded_sequence(
-        seq_pad, x_lens, batch_first=False, enforce_sorted=False
-    )
-    return seq_pac
-
-
-def unpack_sequence(output_packed):
-    from torch.nn.utils.rnn import pad_packed_sequence
-
-    s, x_lens = pad_packed_sequence(output_packed, batch_first=True)
-    return torch.cat(
-        [s[i, :l].view(l) for i, l in enumerate(x_lens.tolist())], dim=0
-    ).view(-1, 1)
+from .functions import *
 
 
 # do extra checks, useful for validating model changes
@@ -113,7 +46,7 @@ def safe_bc(x, b, saturated=True):
 
 
 class AdditiveMask(nn.Module):
-    def __init__(self, input_dim, mask_dim=1, K=5):
+    def __init__(self, input_dim, mask_dim=1, K=5, bias=True):
         super(AdditiveMask, self).__init__()
         self.alpha = nn.Parameter(torch.tensor(1e-3))
         self.x_fn = nn.Sequential(
@@ -121,6 +54,10 @@ class AdditiveMask(nn.Module):
         )
         self.conv = APPNP(K=K, alpha=self.alpha)
         self.K = K
+        if bias:
+            self.bias = nn.Parameter(torch.ones(mask_dim) * -1.0)
+        else:
+            sekf.bias = 0
 
     def forward(self, x, mask, edge_index):
         x = self.x_fn(x)
@@ -128,7 +65,8 @@ class AdditiveMask(nn.Module):
             F.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
         ).view(-1)
         fill = torch.relu(mask)
-        fill = self.conv(fill, edge_index, edge_weights)
+        fill = self.conv(fill, edge_index, edge_weights) + self.bias
+        fill = torch.sigmoid(fill)
         return fill, edge_weights
 
 
@@ -261,12 +199,7 @@ class GNNBase(NNBase):
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        objective_indicator_input_size = 1 + action_one_hot_size
         objective_indicator_size = 1
-        self.objective_indicator_fn = nn.Sequential(
-            init_i(nn.Linear(objective_indicator_input_size, objective_indicator_size))
-        )
-
         # + pos
         objective_active_size = action_one_hot_size + objective_indicator_size + 2
         self.objective_active = nn.GRU(
@@ -428,11 +361,14 @@ class GNNBase(NNBase):
             )
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(objectives.key)
-        dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
+        obj_int = global_norm_pool(
+            self.objective_int_fn(obj_ux_action), objectives.index,
+        )
+        dom_obj_int = safe_bc(obj_int, objectives_projection.field_index)
         # ux action tag sensitivities
         obj_att_input = (
-            self.objective_int_fn(dom_obj_ux_action) * obj_tag_similarities
-        ).sum(dim=1, keepdim=True)
+            (dom_obj_int * obj_tag_similarities).max(dim=1, keepdim=True).values
+        )
         if SAFETY:
             assert (
                 global_max_pool(obj_att_input, objectives_projection.batch).min().item()
@@ -449,24 +385,19 @@ class GNNBase(NNBase):
         obj_att = torch.relu(obj_att) + obj_att_input
 
         # compute objective completeness indicators from DOM
-        # indicators are trained by critic
-        critic_dom_ux_action = dom_ux_action.detach()
-        critic_dom_obj_ux_action = dom_obj_ux_action.detach()
-        critic_obj_att = obj_att.detach()
         dom_dom_obj_ux_action = safe_bc(dom_ux_action, objectives_projection.dom_index)
         # [0 - inf]
+        obj_comp = global_norm_pool(
+            self.objective_comp_fn(obj_ux_action), objectives.index
+        )
+        dom_obj_comp = safe_bc(obj_comp, objectives_projection.field_index)
         dom_obj_comp = (
-            self.objective_comp_fn(dom_obj_ux_action) * obj_tag_similarities
-        ).sum(dim=1, keepdim=True)
+            (dom_obj_comp * obj_tag_similarities).max(dim=1, keepdim=True).values
+        )
 
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
-        dom_obj_indicator_x = torch.cat(
-            [dom_obj_comp, dom_obj_ux_action * dom_dom_obj_ux_action,], dim=1,
-        )
-        dom_obj_indicator = (
-            self.objective_indicator_fn(dom_obj_indicator_x) * critic_obj_att
-        )
+        dom_obj_indicator = dom_obj_comp * obj_att
         obj_indicator = torch.relu(
             global_max_pool(dom_obj_indicator, objectives_projection.field_index)
         )
@@ -478,7 +409,7 @@ class GNNBase(NNBase):
         )
         obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
         obj_active_seq, _ = self.objective_active(obj_ind_seq)
-        obj_active = unpack_sequence(obj_active_seq)
+        obj_active = unpack_sequence(obj_active_seq)[:, 0:1]
         obj_active = softmax(obj_active, objectives.batch)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
@@ -501,6 +432,12 @@ class GNNBase(NNBase):
             assert global_max_pool(_obj_mask, actions.batch).min().item() > 0
             assert global_max_pool(_leaf_mask, actions.batch).min().item() > 0
 
+        """
+        ux_action_consensus = global_norm_pool(
+            _leaf_ux_action * _obj_ux_action, actions.batch
+        )
+        dom_interest = global_norm_pool(_obj_mask * _leaf_mask, actions.batch)
+        """
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
         dom_interest = _obj_mask * _leaf_mask
         action_consensus = torch.relu(ux_action_consensus * dom_interest * _obj_active)
@@ -542,6 +479,7 @@ class GNNBase(NNBase):
             critic_obj_indicator, objectives_projection.field_index
         )
         critic_full_x = safe_bc(full_x.detach(), objectives_projection.dom_index)
+        critic_obj_att = obj_att.detach()
         x_critic_input = torch.cat(
             [
                 critic_full_x,
