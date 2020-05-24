@@ -9,13 +9,22 @@ from torch_geometric.nn import (
     global_mean_pool,
 )
 from torch_scatter import scatter
-from a2c_ppo_acktr.utils import init
 
 
-init_i = lambda m: init(
-    m,
-    lambda x, gain: nn.init.ones_(x),
-    lambda x: nn.init.constant_(x, 0) if x else None,
+def init(module, weight_init, bias_init, gain=1):
+    if isinstance(gain, str):
+        gain = nn.init.calculate_gain(gain)
+    weight_init(module.weight.data, gain=gain)
+    if module.bias is not None:
+        bias_init(module.bias.data)
+    return module
+
+
+init_c = lambda m, c, nl="relu": init(
+    m, lambda x, gain: nn.init.constant_(x, c), lambda x: nn.init.constant_(x, 0),
+)
+init_ones = lambda m, nl="relu": init(
+    m, lambda x, gain: nn.init.ones_(x), lambda x: nn.init.constant_(x, 0),
 )
 init_xu = lambda m, nl="relu": init(
     m,
@@ -69,5 +78,19 @@ def pack_as_sequence(x, batch):
 def unpack_sequence(output_packed):
     s, x_lens = pad_packed_sequence(output_packed, batch_first=True)
     return torch.cat(
-        [s[i, :l].view(l) for i, l in enumerate(x_lens.tolist())], dim=0
-    ).view(-1, 1)
+        [s[i, :l].view(l, -1) for i, l in enumerate(x_lens.tolist())], dim=0
+    )
+
+
+def scatter_dev(x, batch, eps=1e-6):
+    """
+    Compute standard deviation per batch indices
+    """
+    indices, _counts = torch.unique(batch, sorted=True, return_counts=True)
+    _counts = _counts.view(-1, 1)
+    _sum = global_add_pool(x, batch)
+    assert _counts.shape == _sum.shape, str((_counts.shape, _sum.shape))
+    _mean = _sum / _counts
+    _idev = (x - _mean[batch]) ** 2 / (_counts[batch] - 1)
+    _dev = global_add_pool(_idev, batch) ** 0.5
+    return _dev

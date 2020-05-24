@@ -32,6 +32,8 @@ class LevelTracker:
         else:
             stats["fail"] += 1
             self.current_level_idx -= 1
+            if self.current_level_idx > 0:
+                self.current_level_idx = random.randint(0, self.current_level_idx)
         self.current_level_idx = max(
             0, min(len(self.levels) - 1, self.current_level_idx)
         )
@@ -47,8 +49,8 @@ def _miniwob_path(f):
 
 MINIWOB_CHALLENGES = _miniwob_path(
     [
-        ["click-link", "click-tab", "click-button", "click-dialog-2", "click-widget"],
-        ["click-button-sequence", "choose-list", "click-option", "click-checkboxes"],
+        ["click-button", "click-dialog-2", "click-link", "click-tab", "click-widget"],
+        ["choose-list", "click-option", "click-checkboxes", "click-button-sequence"],
         ["enter-text", "enter-text-dynamic"],  # "enter-password"],
         # "click-checkboxes-large"],
         # "navigate-tree"],
