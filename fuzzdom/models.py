@@ -199,14 +199,24 @@ class GNNBase(NNBase):
             # nn.Softmax(dim=1),
         )
         objective_indicator_size = 1
-        # self.norm_obj_indicator = nn.BatchNorm1d(objective_indicator_size)
         # + pos + focus + global focus
         objective_active_size = (
             action_one_hot_size + objective_indicator_size + 2 + 1 + 1
         )
+        if recurrent:
+            # dom + pos + goal indicators
+            goal_dom_size = hidden_size + objective_active_size
+            self.goal_dom_encoder = GCNConv(goal_dom_size, hidden_size)
+            self.state_indicator = nn.Sequential(
+                init_xn(nn.Linear(goal_dom_size + hidden_size, hidden_size), "relu"),
+                nn.ReLU(),
+                init_xu(nn.Linear(hidden_size, 1), "tanh"),
+                nn.Tanh(),
+            )
+            objective_active_size += 1
         self.objective_active = nn.GRU(
             input_size=objective_active_size,
-            hidden_size=4,
+            hidden_size=8,
             num_layers=2,
             # bidirectional=True,
         )
@@ -227,7 +237,7 @@ class GNNBase(NNBase):
         self.critic_conv = SAGEConv(hidden_size, critic_dom_embed_size)
         self.critic_near_completion = nn.GRU(
             input_size=objective_active_size + objective_indicator_size,
-            hidden_size=4,
+            hidden_size=8,
             num_layers=2,
             # bidirectional=True,
         )
@@ -467,6 +477,34 @@ class GNNBase(NNBase):
             ],
             dim=1,
         )
+
+        if self.is_recurrent:
+            goal_dom_input = torch.cat(
+                [
+                    safe_bc(x, objectives_projection.dom_index),
+                    safe_bc(obj_indicator_order, objectives_projection.field_index),
+                ],
+                dim=1,
+            )
+            goal_dom_encoded = self.goal_dom_encoder(
+                goal_dom_input, objectives_projection.edge_index
+            )
+            goal_dom_flat = global_max_pool(
+                goal_dom_encoded, objectives_projection.batch
+            )
+            curr_state, rnn_hxs = self._forward_gru(goal_dom_flat, rnn_hxs, masks)
+            state_indicator_input = torch.cat(
+                [goal_dom_input, safe_bc(curr_state, objectives_projection.batch),],
+                dim=1,
+            )
+            state_indicator = global_max_pool(
+                self.state_indicator(state_indicator_input),
+                objectives_projection.field_index,
+            )
+            obj_indicator_order = torch.cat(
+                [state_indicator, obj_indicator_order], dim=1,
+            )
+
         obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
         obj_active_seq, _ = self.objective_active(obj_ind_seq)
         obj_active = unpack_sequence(obj_active_seq)[:, -1:]
@@ -577,8 +615,6 @@ class GNNBase(NNBase):
             ],
             dim=1,
         )
-        if self.is_recurrent:
-            critic_x, rnn_hxs = self._forward_gru(critic_x, rnn_hxs, masks)
         critic_value = self.critic_gate(critic_x)
 
         self.last_tensors["x"] = x
