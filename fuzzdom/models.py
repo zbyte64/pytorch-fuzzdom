@@ -3,6 +3,7 @@ from torch import nn
 from torch_geometric.nn import (
     SAGEConv,
     APPNP,
+    GCNConv,
     global_max_pool,
     global_add_pool,
     global_mean_pool,
@@ -149,13 +150,13 @@ class GNNBase(NNBase):
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
         self.action_decoder = FixedActionDecoder()
         self.dom_tag = nn.Sequential(
-            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU()
         )
         self.dom_classes = nn.Sequential(
-            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU()
         )
         self.dom_text = nn.Sequential(
-            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(text_embed_size, action_one_hot_size), "relu"), nn.ReLU()
         )
         self.dom_fn = nn.Sequential(
             init_xu(nn.Linear(query_input_dim, hidden_size - query_input_dim), "tanh"),
@@ -175,14 +176,14 @@ class GNNBase(NNBase):
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 8
         self.objective_dom_tag = nn.Sequential(
-            init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU(),
+            init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU()
         )
         self.objective_dom_class = nn.Sequential(
-            init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU(),
+            init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU()
         )
         self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
         self.objective_ux_action_attr = nn.Sequential(
-            init_xn(nn.Linear(action_one_hot_size, 3 * attr_similarity_size), "linear"),
+            init_xn(nn.Linear(action_one_hot_size, 3 * attr_similarity_size), "linear")
         )
         self.objective_comp_fn = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, attr_similarity_size), "relu"),
@@ -223,7 +224,7 @@ class GNNBase(NNBase):
         # max/add pool: ux similarity * dom , softmax
         trunk_size = 2
         self.actor_gate = nn.Sequential(
-            init_c(nn.Linear(trunk_size, 1, bias=False), 10, "relu"), nn.ReLU(),
+            init_c(nn.Linear(trunk_size, 1, bias=False), 10, "relu"), nn.ReLU()
         )
 
         critic_dom_embed_size = 16
@@ -242,12 +243,10 @@ class GNNBase(NNBase):
             # bidirectional=True,
         )
         self.critic_mp_score = nn.Sequential(
-            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"), nn.ReLU()
         )
         self.critic_ap_score = nn.Sequential(
-            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"), nn.ReLU()
         )
         self.graph_size_norm = GraphSizeNorm()
         critic_gate_size = (
@@ -494,7 +493,7 @@ class GNNBase(NNBase):
             )
             curr_state, rnn_hxs = self._forward_gru(goal_dom_flat, rnn_hxs, masks)
             state_indicator_input = torch.cat(
-                [goal_dom_input, safe_bc(curr_state, objectives_projection.batch),],
+                [goal_dom_input, safe_bc(curr_state, objectives_projection.batch)],
                 dim=1,
             )
             state_indicator = global_max_pool(
@@ -502,7 +501,7 @@ class GNNBase(NNBase):
                 objectives_projection.field_index,
             )
             obj_indicator_order = torch.cat(
-                [state_indicator, obj_indicator_order], dim=1,
+                [state_indicator, obj_indicator_order], dim=1
             )
 
         obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
