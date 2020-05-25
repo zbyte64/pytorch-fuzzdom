@@ -185,6 +185,10 @@ def vectorize_projections(
     return data
 
 
+def broadcast_edges(edges, num_nodes, target_dim):
+    return torch.cat([edges + k * num_nodes for k in range(target_dim)]).view(2, -1)
+
+
 class TupleBatch:
     @classmethod
     def from_data_list(cls, data_list):

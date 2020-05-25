@@ -47,26 +47,36 @@ def safe_bc(x, b, saturated=True):
 
 
 class AdditiveMask(nn.Module):
-    def __init__(self, input_dim, mask_dim=1, K=5, bias=True):
+    def __init__(self, input_dim, mask_dim=1, K=5, bias=True, edge_dim=0):
         super(AdditiveMask, self).__init__()
         self.alpha = nn.Parameter(torch.tensor(1e-3))
         self.x_fn = nn.Sequential(
             init_ot(nn.Linear(input_dim, input_dim), "tanh"), nn.Tanh()
         )
+        if edge_dim:
+            self.edge_fn = nn.Sequential(
+                init_ot(nn.Linear(edge_dim, 1), "sigmoid"), nn.Sigmoid()
+            )
+        else:
+            self.edge_fn = None
         self.conv = APPNP(K=K, alpha=self.alpha)
         self.K = K
         if bias:
             self.bias = nn.Parameter(torch.ones(mask_dim) * -1e-3)
         else:
-            sekf.bias = 0
+            sekf.bias = None
 
-    def forward(self, x, mask, edge_index):
+    def forward(self, x, mask, edge_index, edge_attr=None):
         x = self.x_fn(x)
         edge_weights = torch.relu(
             F.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
         ).view(-1)
+        if self.edge_fn:
+            edge_weights = edge_weights * self.edge_fn(edge_attr)
         fill = torch.relu(mask)
-        fill = self.conv(fill, edge_index, edge_weights) - F.softplus(self.bias)
+        fill = self.conv(fill, edge_index, edge_weights)
+        if self.bias is not None:
+            fill = fill - F.softplus(self.bias)
         fill = torch.tanh(fill)
         return fill, edge_weights
 
@@ -182,6 +192,7 @@ class GNNBase(NNBase):
             init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU()
         )
         self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
+        self.objective_pos_conv = AdditiveMask(hidden_size, 1, K=4, edge_dim=1)
         self.objective_ux_action_attr = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 3 * attr_similarity_size), "linear")
         )
@@ -300,7 +311,7 @@ class GNNBase(NNBase):
                         ],
                         dim=1,
                     ),
-                    add_self_loops(dom.edge_index)[0],
+                    add_self_loops(dom.dom_edge_index)[0],
                 )
             )
             x = torch.cat([x, _add_x], dim=1)
@@ -308,7 +319,7 @@ class GNNBase(NNBase):
         _add_x = self.dom_fn(x)
 
         x = torch.cat([x, _add_x], dim=1)
-        proj_x = self.global_conv(x, full_edges(dom.edge_index))
+        proj_x = self.global_conv(x, full_edges(dom.dom_edge_index))
         self.last_tensors["proj_x"] = proj_x
         full_x = x + proj_x
 
@@ -318,7 +329,7 @@ class GNNBase(NNBase):
         leaves_att, leaves_ew = self.leaves_conv(
             safe_bc(proj_x, leaves.dom_index),
             leaf_t_mask,
-            add_self_loops(reverse_edges(leaves.edge_index))[0],
+            add_self_loops(reverse_edges(leaves.dom_edge_index))[0],
         )
         leaves_att = torch.max(leaves_att, leaf_t_mask)
         self.last_tensors["leaves_edge_weights"] = leaves_ew
@@ -410,12 +421,21 @@ class GNNBase(NNBase):
 
         self.last_tensors["obj_att_input"] = obj_att_input
         self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
-        obj_att, obj_ew = self.objective_conv(
-            safe_bc(proj_x, objectives_projection.dom_index),
+        _op_proj_x = safe_bc(proj_x, objectives_projection.dom_index)
+        obj_att_from_dom, obj_ew = self.objective_conv(
+            _op_proj_x,
             obj_att_input,
-            add_self_loops(objectives_projection.edge_index)[0],
+            add_self_loops(objectives_projection.dom_edge_index)[0],
         )
-        obj_att = torch.max(obj_att, obj_att_input)
+        obj_att_from_pos, obj_pos_ew = self.objective_pos_conv(
+            _op_proj_x,
+            obj_att_input,
+            objectives_projection.edge_index,
+            objectives_projection.edge_attr,
+        )
+        obj_att = torch.max(
+            obj_att_from_pos, torch.max(obj_att_from_dom, obj_att_input)
+        )
 
         # project into main action space
         _obj_ux_action = safe_bc(
@@ -486,7 +506,7 @@ class GNNBase(NNBase):
                 dim=1,
             )
             goal_dom_encoded = self.goal_dom_encoder(
-                goal_dom_input, objectives_projection.edge_index
+                goal_dom_input, objectives_projection.dom_edge_index
             )
             goal_dom_flat = global_max_pool(
                 goal_dom_encoded, objectives_projection.batch
@@ -561,7 +581,7 @@ class GNNBase(NNBase):
         )
 
         # critic senses dom
-        critic_conv_x = self.critic_conv(x.detach(), dom.edge_index)
+        critic_conv_x = self.critic_conv(x.detach(), dom.dom_edge_index)
         critic_conv_mp = torch.relu(global_max_pool(critic_conv_x, dom.batch))
         critic_conv_ap = torch.relu(
             global_add_pool(self.graph_size_norm(critic_conv_x, dom.batch), dom.batch)
