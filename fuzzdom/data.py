@@ -165,7 +165,7 @@ def vectorize_projections(
                     + data[v.to_domain.field][index]
                 )
 
-    data["edge_index"] = torch.cat(edges).view(2, -1)
+    data["edge_index"] = torch.cat(edges, dim=1)
 
     indexes = {
         keys["p_domain_index"]: len(entries)
@@ -186,7 +186,7 @@ def vectorize_projections(
 
 
 def broadcast_edges(edges, num_nodes, target_dim):
-    return torch.cat([edges + k * num_nodes for k in range(target_dim)]).view(2, -1)
+    return torch.cat([edges + k * num_nodes for k in range(target_dim)], dim=1)
 
 
 class TupleBatch:
@@ -215,6 +215,6 @@ class IndexedBatch(Batch):
     @classmethod
     def fix_batch_indices(cls, batch):
         for key in list(batch.keys):
-            if key.endswith("index") and not key.startswith("edge_"):
+            if key.endswith("index") and "edge_" not in key:
                 batch[key] = batch[key].view(-1)
         return batch

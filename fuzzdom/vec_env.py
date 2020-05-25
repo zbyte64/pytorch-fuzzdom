@@ -2,7 +2,7 @@ import torch
 from torch_geometric.transforms import Distance
 from torch_geometric.data import Data, Batch
 from torch_geometric.nn import knn_graph
-from torch_geometric.utils import to_undirected
+from torch_geometric.utils import to_undirected, add_self_loops, contains_self_loops
 import gym
 import numpy as np
 import networkx as nx
@@ -68,11 +68,12 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
 
     dom_data.dom_edge_index = dom_data.edge_index
     dom_data.spatial_edge_index = to_undirected(
-        knn_graph(dom_data.pos, k=6, batch=None, loop=False, flow="source_to_target"),
+        knn_graph(dom_data.pos, k=6, batch=None, loop=True, flow="source_to_target"),
         num_nodes=dom_data.num_nodes,
     )
+    assert contains_self_loops(dom_data.spatial_edge_index)
     dom_data.edge_index = dom_data.spatial_edge_index
-    dom_data = Distance()(dom_data)
+    dom_data = Distance(cat=False)(dom_data)
 
     history_data = from_networkx(
         e_history,
@@ -84,17 +85,18 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     history_data.num_nodes = len(e_history)
     assert leaves_data.num_nodes
 
+    fields_projection_data.dom_edge_index = fields_projection_data.edge_index
+    fields_projection_data.edge_index = broadcast_edges(
+        dom_data.spatial_edge_index,
+        dom_data.num_nodes,
+        len(fields_projection_data.combinations),
+    )
+    # assert contains_self_loops(dom_data.spatial_edge_index)
+    # assert contains_self_loops(fields_projection_data.edge_index)
     fields_projection_data.edge_attr = dom_data.edge_attr.repeat(
-        len(fields_projection_data.combinations), 1
-    )
-    fields_projection_data.dom_edge_index = broadcast_edges(
-        e_dom.dom_edge_index, e_dom.num_nodes, len(fields_projection_data.combinations),
-    )
-    leaves_data.dom_edge_index = broadcast_edges(
-        e_dom.dom_edge_index, e_dom.num_nodes, len(leaves_data.combinations),
-    )
-    actions_data.dom_edge_index = broadcast_edges(
-        e_dom.dom_edge_index, e_dom.num_nodes, len(actions_data.combinations),
+        fields_projection_data.edge_index.shape[1]
+        // dom_data.spatial_edge_index.shape[1],
+        1,
     )
 
     return (
@@ -198,6 +200,7 @@ def project_dom_leaves(source: nx.DiGraph):
         data, dom_index=num_nodes, leaf_index=len(leaves), dom_leaf_index=num_nodes
     )
     data.num_nodes = final_size
+    data.combinations = leaves
     return data, leaves
 
 

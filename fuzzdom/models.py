@@ -72,7 +72,7 @@ class AdditiveMask(nn.Module):
             F.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
         ).view(-1)
         if self.edge_fn:
-            edge_weights = edge_weights * self.edge_fn(edge_attr)
+            edge_weights = edge_weights * self.edge_fn(edge_attr).view(-1)
         fill = torch.relu(mask)
         fill = self.conv(fill, edge_index, edge_weights)
         if self.bias is not None:
@@ -329,7 +329,7 @@ class GNNBase(NNBase):
         leaves_att, leaves_ew = self.leaves_conv(
             safe_bc(proj_x, leaves.dom_index),
             leaf_t_mask,
-            add_self_loops(reverse_edges(leaves.dom_edge_index))[0],
+            add_self_loops(reverse_edges(leaves.edge_index))[0],
         )
         leaves_att = torch.max(leaves_att, leaf_t_mask)
         self.last_tensors["leaves_edge_weights"] = leaves_ew
