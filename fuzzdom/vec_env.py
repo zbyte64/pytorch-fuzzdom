@@ -1,7 +1,6 @@
 import torch
-from torch_geometric.transforms import Distance
+from torch_geometric.transforms import Compose, Distance, Spherical, KNNGraph
 from torch_geometric.data import Data, Batch
-from torch_geometric.nn import knn_graph
 from torch_geometric.utils import to_undirected, add_self_loops, contains_self_loops
 import gym
 import numpy as np
@@ -31,6 +30,27 @@ def one_hot(i, k):
     oh = torch.zeros((k,), dtype=torch.float32)
     oh[i] = 1
     return oh
+
+
+def replace_nan(x, v=0):
+    x[torch.isnan(x)] = v
+    return x
+
+
+class FixEdgeAttr:
+    def __call__(self, data):
+        data.edge_attr = replace_nan(data.edge_attr)
+        return data
+
+
+SPATIAL_TRANSFORMER = Compose(
+    [
+        KNNGraph(k=6, loop=True, force_undirected=True),
+        Distance(),
+        Spherical(),
+        FixEdgeAttr(),
+    ]
+)
 
 
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
@@ -67,13 +87,8 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
 
     dom_data.dom_edge_index = dom_data.edge_index
-    dom_data.spatial_edge_index = to_undirected(
-        knn_graph(dom_data.pos, k=6, batch=None, loop=True, flow="source_to_target"),
-        num_nodes=dom_data.num_nodes,
-    )
-    assert contains_self_loops(dom_data.spatial_edge_index)
-    dom_data.edge_index = dom_data.spatial_edge_index
-    dom_data = Distance(cat=False)(dom_data)
+    dom_data = SPATIAL_TRANSFORMER(dom_data)
+    dom_data.spatial_edge_index = dom_data.edge_index
 
     history_data = from_networkx(
         e_history,

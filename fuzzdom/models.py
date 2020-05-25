@@ -54,8 +54,12 @@ class AdditiveMask(nn.Module):
             init_ot(nn.Linear(input_dim, input_dim), "tanh"), nn.Tanh()
         )
         if edge_dim:
+            edge_size = edge_dim + 1
             self.edge_fn = nn.Sequential(
-                init_ones(nn.Linear(edge_dim + 1, 1), "sigmoid"), nn.Sigmoid()
+                init_xu(nn.Linear(edge_size, edge_size), "relu"),
+                nn.ReLU(),
+                init_xn(nn.Linear(edge_size, 1), "sigmoid"),
+                nn.Sigmoid(),
             )
         else:
             self.edge_fn = None
@@ -194,7 +198,7 @@ class GNNBase(NNBase):
             init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU()
         )
         self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
-        self.objective_pos_conv = AdditiveMask(hidden_size, 1, K=4, edge_dim=1)
+        self.objective_pos_conv = AdditiveMask(hidden_size, 1, K=4, edge_dim=4)
         self.objective_ux_action_attr = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 3 * attr_similarity_size), "linear")
         )
