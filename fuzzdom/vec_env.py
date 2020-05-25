@@ -238,8 +238,8 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         encoded_data["dom_idx"] = (i,)
         encoded_data["depth"] = ((d.get(node, 0) + 1) / max_depth,)
         encoded_data["pos"] = (
-            encoded_data["rx"][0],
-            encoded_data["ry"][0],
+            encoded_data["rx"][0] + encoded_data["width"][0] / 2,
+            encoded_data["ry"][0] + encoded_data["height"][0] / 2,
             encoded_data["depth"][0],
         )
         o.add_node(i, **encoded_data)

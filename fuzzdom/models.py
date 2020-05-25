@@ -55,7 +55,7 @@ class AdditiveMask(nn.Module):
         )
         if edge_dim:
             self.edge_fn = nn.Sequential(
-                init_ot(nn.Linear(edge_dim, 1), "sigmoid"), nn.Sigmoid()
+                init_ones(nn.Linear(edge_dim + 1, 1), "sigmoid"), nn.Sigmoid()
             )
         else:
             self.edge_fn = None
@@ -72,7 +72,9 @@ class AdditiveMask(nn.Module):
             F.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
         ).view(-1)
         if self.edge_fn:
-            edge_weights = edge_weights * self.edge_fn(edge_attr).view(-1)
+            edge_weights = self.edge_fn(
+                torch.cat([edge_attr, edge_weights.view(-1, 1)], dim=1)
+            ).view(-1)
         fill = torch.relu(mask)
         fill = self.conv(fill, edge_index, edge_weights)
         if self.bias is not None:
