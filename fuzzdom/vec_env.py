@@ -1,5 +1,12 @@
 import torch
-from torch_geometric.transforms import Compose, Distance, Spherical, KNNGraph
+from torch_geometric.transforms import (
+    Compose,
+    FaceToEdge,
+    Distance,
+    Spherical,
+    KNNGraph,
+    AddSelfLoops,
+)
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils import to_undirected, add_self_loops, contains_self_loops
 import gym
@@ -7,6 +14,7 @@ import numpy as np
 import networkx as nx
 from collections import defaultdict
 import asyncio
+import scipy.spatial
 
 from .domx import short_embed
 from .state import MiniWoBGraphState
@@ -43,9 +51,38 @@ class FixEdgeAttr:
         return data
 
 
-SPATIAL_TRANSFORMER = Compose(
+class Delaunay:
+    def __call__(self, data):
+        pos = data.pos.cpu().numpy()
+        tri = scipy.spatial.Delaunay(pos, qhull_options="QJ")
+        face = torch.from_numpy(tri.simplices)
+        assert len(face.shape) == 2
+        assert face.shape[1] == 4
+        edge_index = torch.cat(
+            [
+                face[:, 0:2],
+                face[:, 1:3],
+                face[:, 2:4],
+                torch.cat([face[:, 3:4], face[:, 0:1]], dim=1),
+            ],
+            dim=0,
+        ).t()
+        assert edge_index.shape[0] == 2, str(edge_index.shape)
+        data.edge_index = edge_index.to(data.pos.device, torch.long)
+        return data
+
+
+class ToUndirected:
+    def __call__(self, data):
+        data.edge_index = to_undirected(data.edge_index, num_nodes=data.num_nodes)
+        return data
+
+
+TRANSFORMER = Compose(
     [
-        KNNGraph(k=6, loop=True, force_undirected=True),
+        Delaunay(),
+        ToUndirected(),
+        AddSelfLoops(),
         Distance(),
         Spherical(),
         FixEdgeAttr(),
@@ -53,8 +90,14 @@ SPATIAL_TRANSFORMER = Compose(
 )
 
 
+def make_spatial_transformer(max_depth, num_nodes):
+    k = min(max_depth + 6, num_nodes - 1)
+    assert k > 0
+    return make_spatial_transformer_k(k)
+
+
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
-    e_dom = encode_dom_graph(graph_state.dom_graph)
+    e_dom, max_depth = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
     fields_projection_data = vectorize_projections(
         {"field": list({"field_idx": i} for i in range(len(e_fields.nodes)))},
@@ -87,7 +130,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
 
     dom_data.dom_edge_index = dom_data.edge_index
-    dom_data = SPATIAL_TRANSFORMER(dom_data)
+    dom_data = TRANSFORMER(dom_data)
     dom_data.spatial_edge_index = dom_data.edge_index
 
     history_data = from_networkx(
@@ -261,7 +304,7 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         numeric_map[node] = i
     for u, v in g.edges:
         o.add_edge(numeric_map[u], numeric_map[v])
-    return o
+    return o, max_depth
 
 
 class ReceiptsGymWrapper(gym.ObservationWrapper):

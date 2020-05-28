@@ -54,7 +54,7 @@ MINIWOB_CHALLENGES = _miniwob_path(
         ["enter-text", "enter-text-dynamic"],  # "enter-password"],
         # "click-checkboxes-large"],
         # "navigate-tree"],
-        ["login-user", "login-user-popup", "multi-layouts", "multi-orderings"],
+        ["login-user", "login-user-popup"],  # , "multi-layouts", "multi-orderings"],
         # ["social-media", "social-media-all", "social-media-some"],
         # ["click-tab-2", "click-tab-2-medium"],  # "click-tab-2-hard"],
         # ["email-inbox-delete", "email-inbox-forward", "email-inbox-important", "email-inbox-noscroll", "email-inbox-reply", "email-inbox-star-reply", "email-inbox"],

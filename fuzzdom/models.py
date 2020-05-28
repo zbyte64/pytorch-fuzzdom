@@ -47,38 +47,51 @@ def safe_bc(x, b, saturated=True):
 
 
 class AdditiveMask(nn.Module):
-    def __init__(self, input_dim, mask_dim=1, K=5, bias=True, edge_dim=0):
+    def __init__(self, input_dim, mask_dim=1, K=5, bias=True):
         super(AdditiveMask, self).__init__()
         self.alpha = nn.Parameter(torch.tensor(1e-3))
         self.x_fn = nn.Sequential(
             init_ot(nn.Linear(input_dim, input_dim), "tanh"), nn.Tanh()
         )
-        if edge_dim:
-            edge_size = edge_dim + 1
-            self.edge_fn = nn.Sequential(
-                init_xu(nn.Linear(edge_size, edge_size), "relu"),
-                nn.ReLU(),
-                init_xn(nn.Linear(edge_size, 1), "sigmoid"),
-                nn.Sigmoid(),
-            )
-        else:
-            self.edge_fn = None
         self.conv = APPNP(K=K, alpha=self.alpha)
         self.K = K
         if bias:
-            self.bias = nn.Parameter(torch.ones(mask_dim) * -1e-3)
+            self.bias = nn.Parameter(torch.ones(mask_dim) * -3)
         else:
             sekf.bias = None
 
-    def forward(self, x, mask, edge_index, edge_attr=None):
+    def forward(self, x, mask, edge_index):
         x = self.x_fn(x)
         edge_weights = torch.relu(
             F.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
         ).view(-1)
-        if self.edge_fn:
-            edge_weights = self.edge_fn(
-                torch.cat([edge_attr, edge_weights.view(-1, 1)], dim=1)
-            ).view(-1)
+        fill = torch.relu(mask)
+        fill = self.conv(fill, edge_index, edge_weights)
+        if self.bias is not None:
+            fill = fill - F.softplus(self.bias)
+        fill = torch.tanh(fill)
+        return fill, edge_weights
+
+
+class EdgeMask(nn.Module):
+    def __init__(self, edge_dim, mask_dim=1, K=5, bias=True):
+        super(EdgeMask, self).__init__()
+        self.alpha = nn.Parameter(torch.tensor(1e-3))
+        self.edge_fn = nn.Sequential(
+            init_xu(nn.Linear(edge_dim, edge_dim), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(edge_dim, 1), "sigmoid"),
+            nn.Sigmoid(),
+        )
+        self.conv = APPNP(K=K, alpha=self.alpha)
+        self.K = K
+        if bias:
+            self.bias = nn.Parameter(torch.ones(mask_dim) * -3)
+        else:
+            sekf.bias = None
+
+    def forward(self, edge_attr, mask, edge_index):
+        edge_weights = self.edge_fn(edge_attr).view(-1)
         fill = torch.relu(mask)
         fill = self.conv(fill, edge_index, edge_weights)
         if self.bias is not None:
@@ -198,7 +211,7 @@ class GNNBase(NNBase):
             init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU()
         )
         self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
-        self.objective_pos_conv = AdditiveMask(hidden_size, 1, K=4, edge_dim=4)
+        self.objective_pos_conv = EdgeMask(4, 1)
         self.objective_ux_action_attr = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 3 * attr_similarity_size), "linear")
         )
@@ -434,10 +447,9 @@ class GNNBase(NNBase):
             add_self_loops(objectives_projection.dom_edge_index)[0],
         )
         obj_att_from_pos, obj_pos_ew = self.objective_pos_conv(
-            _op_proj_x,
+            objectives_projection.edge_attr,
             obj_att_input,
             objectives_projection.edge_index,
-            objectives_projection.edge_attr,
         )
         obj_att = torch.max(
             obj_att_from_pos, torch.max(obj_att_from_dom, obj_att_input)
