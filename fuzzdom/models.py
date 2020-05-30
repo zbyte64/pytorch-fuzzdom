@@ -251,10 +251,14 @@ class GNNBase(NNBase):
             num_layers=2,
             # bidirectional=True,
         )
-        # max/add pool: ux similarity * dom , softmax
-        trunk_size = 2
+        # (consensus, softmax, norm) * ([1, consensus])
+        trunk_size = 6
+        self.trunk_norm = InstanceNorm(1)
         self.actor_gate = nn.Sequential(
-            init_c(nn.Linear(trunk_size, 1, bias=False), 10, "relu"), nn.ReLU()
+            init_xu(nn.Linear(trunk_size, trunk_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(trunk_size, 1), "relu"),
+            nn.ReLU(),
         )
 
         critic_dom_embed_size = 16
@@ -568,7 +572,10 @@ class GNNBase(NNBase):
         action_batch_idx = global_max_pool(
             actions.batch.view(-1, 1), actions.action_index
         ).view(-1)
-        trunk = torch.cat([softmax(trunk_max, action_batch_idx), trunk_max], dim=1)
+        trunk_softmax = softmax(trunk_max, action_batch_idx)
+        trunk_norm = self.trunk_norm(trunk_max, action_batch_idx)
+        trunk = torch.cat([trunk_max, trunk_softmax, trunk_norm,], dim=1,)
+        trunk = torch.cat([trunk, trunk * trunk_max], dim=1)
         action_votes = self.actor_gate(trunk)
         action_idx = global_max_pool(actions.action_idx, actions.action_index)
 
