@@ -90,32 +90,34 @@ TRANSFORMER = Compose(
 )
 
 
-def make_spatial_transformer(max_depth, num_nodes):
-    k = min(max_depth + 6, num_nodes - 1)
-    assert k > 0
-    return make_spatial_transformer_k(k)
-
-
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_dom, max_depth = encode_dom_graph(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
+
+    dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
+    dom_data.dom_edge_index = dom_data.edge_index
+    dom_data = TRANSFORMER(dom_data)
+    dom_data.spatial_edge_index = dom_data.edge_index
+
     fields_projection_data = vectorize_projections(
         {"field": list({"field_idx": i} for i in range(len(e_fields.nodes)))},
-        e_dom,
+        dom_data,
         source_domain="dom",
         final_domain="dom_field",
     )
     leaves_data, leaves = project_dom_leaves(e_dom)
     actions_data = vectorize_projections(
         {
-            "ux_action": [{"action_idx": i} for i in range(4)],
+            "ux_action": [
+                {"action_idx": i, "action_one_hot": one_hot(i, 4)} for i in range(4)
+            ],
             "field": [{"field_idx": i} for i in e_fields.nodes],
             "leaf": [
                 {"dom_idx": torch.tensor(e_dom.nodes[i]["dom_idx"], dtype=torch.int64)}
                 for i in leaves
             ],
         },
-        e_dom,
+        dom_data,
         source_domain="dom",
         final_domain="action",
         add_intersections=[
@@ -127,12 +129,6 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     )
 
     e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
-    dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
-
-    dom_data.dom_edge_index = dom_data.edge_index
-    dom_data = TRANSFORMER(dom_data)
-    dom_data.spatial_edge_index = dom_data.edge_index
-
     history_data = from_networkx(
         e_history,
         ux_action_index=4,
@@ -142,20 +138,6 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     # because history is usually empty
     history_data.num_nodes = len(e_history)
     assert leaves_data.num_nodes
-
-    fields_projection_data.dom_edge_index = fields_projection_data.edge_index
-    fields_projection_data.edge_index = broadcast_edges(
-        dom_data.spatial_edge_index,
-        dom_data.num_nodes,
-        len(fields_projection_data.combinations),
-    )
-    # assert contains_self_loops(dom_data.spatial_edge_index)
-    # assert contains_self_loops(fields_projection_data.edge_index)
-    fields_projection_data.edge_attr = dom_data.edge_attr.repeat(
-        fields_projection_data.edge_index.shape[1]
-        // dom_data.spatial_edge_index.shape[1],
-        1,
-    )
 
     return (
         dom_data,
@@ -222,7 +204,7 @@ def project_dom_leaves(source: nx.DiGraph):
     * leaf_index (per leaf)
     """
     # 1 out connection because self connected
-    leaves = list(filter(lambda n: source.out_degree(n) == 0, source.nodes))
+    leaves = list(filter(lambda n: source.out_degree(n) == 1, source.nodes))
 
     t_edge_index = torch.tensor(list(source.edges)).t().contiguous()
     num_nodes = source.number_of_nodes()
@@ -254,8 +236,15 @@ def project_dom_leaves(source: nx.DiGraph):
         data["dom_leaf_index"][k] = torch.tensor(p, dtype=torch.int64)
 
     data["edge_index"] = torch.cat(edges).view(2, -1)
+    data["br_dom_edge_index"] = torch.arange(0, t_edge_index.shape[1]).repeat(
+        len(leaves)
+    )
     data = SubData(
-        data, dom_index=num_nodes, leaf_index=len(leaves), dom_leaf_index=num_nodes
+        data,
+        dom_index=num_nodes,
+        leaf_index=len(leaves),
+        dom_leaf_index=num_nodes,
+        br_dom_edge_index=t_edge_index.shape[1],
     )
     data.num_nodes = final_size
     data.combinations = leaves
@@ -302,6 +291,8 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         )
         o.add_node(i, **encoded_data)
         numeric_map[node] = i
+        # add self loop
+        o.add_edge(i, i)
     for u, v in g.edges:
         o.add_edge(numeric_map[u], numeric_map[v])
     return o, max_depth

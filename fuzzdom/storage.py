@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 from torch_geometric.data import Data
-from a2c_ppo_acktr.storage import RolloutStorage
 
 from .data import TupleBatch
 
@@ -25,6 +24,9 @@ class StorageReceipt:
     def __getitem__(self, receipt):
         results = [self._data[receipt]]
         return self._wrap_results(results)
+
+    def __reduce__(self):
+        return (StorageReceipt, tuple())
 
     def issue_receipt(self, state):
         # always have actions
@@ -51,39 +53,3 @@ class StorageReceipt:
         discard = current - keep
         for d in discard:
             del self._data[d]
-
-
-class ReceiptRolloutStorage(RolloutStorage):
-    def __init__(
-        self,
-        num_steps,
-        num_processes,
-        obs_shape,
-        action_space,
-        recurrent_hidden_state_size,
-        receipts,
-    ):
-        super(ReceiptRolloutStorage, self).__init__(
-            num_steps,
-            num_processes,
-            obs_shape,
-            action_space,
-            recurrent_hidden_state_size,
-        )
-        self.receipts = receipts
-
-    def feed_forward_generator(
-        self, advantages, num_mini_batch=None, mini_batch_size=None
-    ):
-        for b in super(ReceiptRolloutStorage, self).feed_forward_generator(
-            advantages, num_mini_batch, mini_batch_size
-        ):
-            obs, *rest = b
-            yield (self.receipts.redeem(obs), *rest)
-
-    def recurrent_generator(self, advantages, num_mini_batch):
-        for b in super(ReceiptRolloutStorage, self).recurrent_generator(
-            advantages, num_mini_batch
-        ):
-            obs, *rest = b
-            yield (self.receipts.redeem(obs), *rest)

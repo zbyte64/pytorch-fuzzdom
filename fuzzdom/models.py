@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch_geometric.utils import add_self_loops
 from torch_geometric.utils import softmax
 
-from a2c_ppo_acktr.model import NNBase
+from a2c_ppo_acktr.model import NNBase, Policy
 from a2c_ppo_acktr.utils import init
 
 from .functions import *
@@ -29,9 +29,31 @@ if SAFETY:
     torch.autograd.set_detect_anomaly(True)
 
 
+class GraphPolicy(Policy):
+    """
+    Wraps Policy class to handle graph inputs via receipts
+    """
+
+    def __init__(self, *args, receipts, **kwargs):
+        super(GraphPolicy, self).__init__(*args, **kwargs)
+        self.receipts = receipts
+
+    def act(self, inputs, rnn_hxs, masks, deterministic=False):
+        inputs = self.receipts.redeem(inputs)
+        return super(GraphPolicy, self).act(inputs, rnn_hxs, masks, deterministic)
+
+    def get_value(self, inputs, rnn_hxs, masks):
+        inputs = self.receipts.redeem(inputs)
+        return super(GraphPolicy, self).get_value(inputs, rnn_hxs, masks)
+
+    def evaluate_actions(self, inputs, rnn_hxs, masks, action):
+        inputs = self.receipts.redeem(inputs)
+        return super(GraphPolicy, self).evaluate_actions(inputs, rnn_hxs, masks, action)
+
+
 def safe_bc(x, b, saturated=True):
     """
-    Doas a matrix broadcast but checks that the mask size is appropriate
+    Does a matrix broadcast but checks that the mask size is appropriate
     """
     m = None
     if SAFETY:
@@ -46,31 +68,41 @@ def safe_bc(x, b, saturated=True):
     return x[b]
 
 
-class AdditiveMask(nn.Module):
-    def __init__(self, input_dim, mask_dim=1, K=5, bias=True):
-        super(AdditiveMask, self).__init__()
-        self.alpha = nn.Parameter(torch.tensor(1e-3))
-        self.x_fn = nn.Sequential(
-            init_ot(nn.Linear(input_dim, input_dim), "tanh"), nn.Tanh()
-        )
-        self.conv = APPNP(K=K, alpha=self.alpha)
-        self.K = K
-        if bias:
-            self.bias = nn.Parameter(torch.ones(mask_dim) * -3)
+def safe_bc_edges(x, b, saturated=True):
+    """
+    Does a matrix broadcast but checks that the mask size is appropriate
+    """
+    m = None
+    if SAFETY:
+        assert len(b.shape) == 1
+        assert len(x.shape) > 1
+        m = b.max().item() + 1
+        if saturated:
+            assert x.shape[0] == m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
         else:
-            sekf.bias = None
+            # mask takes a subsample
+            assert x.shape[0] >= m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
+    return x[b]
 
-    def forward(self, x, mask, edge_index):
-        x = self.x_fn(x)
-        edge_weights = torch.relu(
-            F.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
-        ).view(-1)
-        fill = torch.relu(mask)
-        fill = self.conv(fill, edge_index, edge_weights)
-        if self.bias is not None:
-            fill = fill - F.softplus(self.bias)
-        fill = torch.tanh(fill)
-        return fill, edge_weights
+
+class EdgeAttrs(nn.Module):
+    def __init__(self, input_dim, hidden_size=8, out_dim=1):
+        super(EdgeAttrs, self).__init__()
+        self.node_encoder = nn.Sequential(
+            init_ot(nn.Linear(input_dim, hidden_size), "tanh"), nn.Tanh()
+        )
+        self.edge_fn = nn.Sequential(
+            init_ot(nn.Linear(hidden_size * 3, hidden_size), "relu"),
+            nn.ReLU(),
+            init_ot(nn.Linear(hidden_size, out_dim), "sigmoid"),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x, edge_index):
+        x_src = self.node_encoder(x[edge_index[0]])
+        x_dst = self.node_encoder(x[edge_index[1]])
+        _x = torch.cat([x_src, x_dst, x_src - x_dst], dim=1)
+        return self.edge_fn(_x)
 
 
 class EdgeMask(nn.Module):
@@ -78,10 +110,7 @@ class EdgeMask(nn.Module):
         super(EdgeMask, self).__init__()
         self.alpha = nn.Parameter(torch.tensor(1e-3))
         self.edge_fn = nn.Sequential(
-            init_xu(nn.Linear(edge_dim, edge_dim), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(edge_dim, 1), "sigmoid"),
-            nn.Sigmoid(),
+            init_xn(nn.Linear(edge_dim, 1), "sigmoid"), nn.Sigmoid(),
         )
         self.conv = APPNP(K=K, alpha=self.alpha)
         self.K = K
@@ -201,7 +230,8 @@ class GNNBase(NNBase):
             init_ot(nn.Linear(action_one_hot_size, action_one_hot_size), "linear"),
             nn.Softmax(dim=1),
         )
-        self.leaves_conv = AdditiveMask(hidden_size, 1, K=7)
+        self.dom_transitivity_fn = EdgeAttrs(hidden_size)
+        self.leaves_conv = EdgeMask(1, 1, K=7)
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 8
         self.objective_dom_tag = nn.Sequential(
@@ -210,15 +240,12 @@ class GNNBase(NNBase):
         self.objective_dom_class = nn.Sequential(
             init_xu(nn.Linear(text_embed_size, text_embed_size), "relu"), nn.ReLU()
         )
-        self.objective_conv = AdditiveMask(hidden_size, 1, K=7)
-        self.objective_pos_conv = EdgeMask(4, 1)
+        self.objective_pos_conv = EdgeMask(4 + 1, 1)
         self.objective_ux_action_attr = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 3 * attr_similarity_size), "linear")
         )
-        self.objective_comp_fn = nn.Sequential(
-            init_xn(nn.Linear(action_one_hot_size, attr_similarity_size), "relu"),
-            nn.ReLU(),
-        )
+        # norm goal attention map before multiplying cosine distances
+        self.objective_comp_norm = InstanceNorm(1)
 
         self.objective_ux_action_fn = nn.Sequential(
             # init_r(nn.Linear(text_embed_size, text_embed_size)),
@@ -251,8 +278,9 @@ class GNNBase(NNBase):
             num_layers=2,
             # bidirectional=True,
         )
-        # (consensus, softmax, norm) * ([1, consensus])
-        trunk_size = 6
+        # [consensus, 1] x [ux action, consensus, norm consensus, active, goal compl indicator, dev] + (consensus - avg)
+        trunk_size = (action_one_hot_size + 5) * 2 + 1
+        # norm consensus
         self.trunk_norm = InstanceNorm(1)
         self.actor_gate = nn.Sequential(
             init_xu(nn.Linear(trunk_size, trunk_size), "relu"),
@@ -261,35 +289,28 @@ class GNNBase(NNBase):
             nn.ReLU(),
         )
 
-        critic_dom_embed_size = 16
-        critic_size = (
-            attr_similarity_size
-            + 2 * action_one_hot_size
-            + 1  # obj att
-            + 1  # ux action agreement
-            + critic_dom_embed_size  # critic conv
-        )
-        self.critic_conv = SAGEConv(hidden_size, critic_dom_embed_size)
-        self.critic_near_completion = nn.GRU(
-            input_size=objective_active_size + objective_indicator_size,
-            hidden_size=8,
-            num_layers=2,
-            # bidirectional=True,
-        )
+        critic_embed_size = 16
+        critic_size = trunk_size
         self.critic_mp_score = nn.Sequential(
-            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"), nn.ReLU()
+            init_xu(nn.Linear(critic_size, critic_embed_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(critic_embed_size, critic_embed_size), "sigmoid"),
+            nn.Sigmoid(),
         )
         self.critic_ap_score = nn.Sequential(
-            init_xn(nn.Linear(critic_size, objective_indicator_size), "relu"), nn.ReLU()
+            init_xu(nn.Linear(critic_size, critic_embed_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(critic_embed_size, critic_embed_size), "sigmoid"),
+            nn.Sigmoid(),
         )
         self.graph_size_norm = GraphSizeNorm()
         critic_gate_size = (
-            2 * critic_dom_embed_size + 2 * objective_indicator_size + 1 + 1
+            2 * critic_embed_size + 1 + 1
         )  # active steps, near_completion
         self.critic_gate = nn.Sequential(
-            init_xu(nn.Linear(critic_gate_size, critic_gate_size), "relu"),
+            init_xu(nn.Linear(critic_gate_size, critic_embed_size), "relu"),
             nn.ReLU(),
-            init_xn(nn.Linear(critic_gate_size, 1), "linear"),
+            init_xn(nn.Linear(critic_embed_size, 1), "linear"),
         )
 
     def forward(self, inputs, rnn_hxs, masks):
@@ -334,7 +355,7 @@ class GNNBase(NNBase):
                         ],
                         dim=1,
                     ),
-                    add_self_loops(dom.dom_edge_index)[0],
+                    dom.dom_edge_index,
                 )
             )
             x = torch.cat([x, _add_x], dim=1)
@@ -346,13 +367,17 @@ class GNNBase(NNBase):
         self.last_tensors["proj_x"] = proj_x
         full_x = x + proj_x
 
+        leaf_edges = reverse_edges(leaves.edge_index)
+        _d_edges = reverse_edges(dom.dom_edge_index)
+        dom_edge_trans = self.dom_transitivity_fn(full_x, _d_edges)
+
         # leaves are targetable elements
         leaf_t_mask = leaves.mask.type(torch.float)
         # compute a leaf dependent dom feats to indicate relevent nodes
         leaves_att, leaves_ew = self.leaves_conv(
-            safe_bc(proj_x, leaves.dom_index),
+            safe_bc_edges(dom_edge_trans, leaves.br_dom_edge_index),
             leaf_t_mask,
-            add_self_loops(reverse_edges(leaves.edge_index))[0],
+            leaf_edges,
         )
         leaves_att = torch.max(leaves_att, leaf_t_mask)
         self.last_tensors["leaves_edge_weights"] = leaves_ew
@@ -424,6 +449,8 @@ class GNNBase(NNBase):
             )
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(objectives.key)
+        # infer interested dom attrs from action
+        # [:,:,0] = no op. [:,:,1] = goal target. [:,:,2] = goal completion.
         obj_ux_action_attr = torch.softmax(
             self.objective_ux_action_attr(obj_ux_action).view(
                 -1, self.attr_similarity_size, 3
@@ -444,20 +471,16 @@ class GNNBase(NNBase):
 
         self.last_tensors["obj_att_input"] = obj_att_input
         self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
-        _op_proj_x = safe_bc(proj_x, objectives_projection.dom_index)
-        obj_att_from_dom, obj_ew = self.objective_conv(
-            _op_proj_x,
-            obj_att_input,
-            add_self_loops(objectives_projection.dom_edge_index)[0],
+        dom_pos_edge_trans = self.dom_transitivity_fn(full_x, dom.spatial_edge_index)
+        dom_pos_edge_trans = safe_bc_edges(
+            dom_pos_edge_trans, objectives_projection.br_dom_edge_index
         )
-        obj_att_from_pos, obj_pos_ew = self.objective_pos_conv(
-            objectives_projection.edge_attr,
+        obj_att_from_pos, obj_ew = self.objective_pos_conv(
+            torch.cat([objectives_projection.edge_attr, dom_pos_edge_trans], dim=1),
             obj_att_input,
             objectives_projection.edge_index,
         )
-        obj_att = torch.max(
-            obj_att_from_pos, torch.max(obj_att_from_dom, obj_att_input)
-        )
+        obj_att = torch.max(obj_att_from_pos, obj_att_input)
 
         # project into main action space
         _obj_ux_action = safe_bc(
@@ -476,6 +499,7 @@ class GNNBase(NNBase):
 
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
         dom_interest = _obj_mask * _leaf_mask
+        action_consensus = ux_action_consensus * dom_interest
 
         # begin determining active step
         # compute objective completeness indicators from DOM
@@ -493,16 +517,18 @@ class GNNBase(NNBase):
 
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
-        dom_obj_indicator = dom_obj_comp * obj_att * dom_obj_comp_ux_action
+        dom_obj_indicator = dom_obj_comp * self.objective_comp_norm(
+            obj_att * dom_obj_comp_ux_action, objectives_projection.batch
+        )
+
         obj_indicator = torch.relu(
             global_max_pool(dom_obj_indicator, objectives_projection.field_index)
         )
-        critic_obj_indicator = obj_indicator.detach()
 
         # determine if a goal has focus
         goal_focus = safe_bc(dom.focused, actions.dom_index)
         goal_focus = global_max_pool(
-            goal_focus * ux_action_consensus * dom_interest, actions.field_index
+            goal_focus * action_consensus, actions.field_index,
         )
         has_focus = global_max_pool(goal_focus, objectives.batch)
 
@@ -518,6 +544,7 @@ class GNNBase(NNBase):
             ],
             dim=1,
         )
+        assert obj_indicator_order.shape[1] == 9, str(obj_indicator_order.shape)
 
         if self.is_recurrent:
             goal_dom_input = torch.cat(
@@ -547,9 +574,9 @@ class GNNBase(NNBase):
             )
 
         obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
-        obj_active_seq, _ = self.objective_active(obj_ind_seq)
-        obj_active = unpack_sequence(obj_active_seq)[:, -1:]
-        obj_active = softmax(obj_active, objectives.batch)
+        obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
+        obj_active_share = unpack_sequence(obj_active_seq)[:, -1:]
+        obj_active = softmax(obj_active_share, objectives.batch)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
         self.last_tensors["obj_indicator"] = obj_indicator
@@ -557,7 +584,25 @@ class GNNBase(NNBase):
         self.last_tensors["obj_edge_weights"] = obj_ew
 
         # main action space activity
-        action_consensus = torch.relu(ux_action_consensus * dom_interest * _obj_active)
+        trunk_norm = self.trunk_norm(action_consensus, actions.batch)
+        trunk_dev, trunk_med = scatter_std_dev(trunk_norm, actions.batch)
+        trunk_dev = trunk_dev[actions.batch]
+        trunk_med = trunk_med[actions.batch]
+        trunk_obj_indicator = -safe_bc(dom_obj_indicator, actions.dom_field_index)
+        trunk = torch.cat(
+            [
+                action_consensus,
+                trunk_norm,
+                _obj_active,
+                trunk_obj_indicator,
+                actions.action_one_hot,
+                trunk_dev,
+            ],
+            dim=1,
+        )
+        trunk = torch.cat(
+            [trunk, trunk * action_consensus, action_consensus - trunk_med], dim=1,
+        )
 
         if SAFETY:
             assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
@@ -567,16 +612,11 @@ class GNNBase(NNBase):
         self.last_tensors["action_consensus"] = action_consensus
         self.last_tensors["ux_action_consensus"] = ux_action_consensus
         self.last_tensors["dom_interest"] = dom_interest
-        trunk_max = global_max_pool(action_consensus, actions.action_index)
         # gather the batch ids for the votes
         action_batch_idx = global_max_pool(
             actions.batch.view(-1, 1), actions.action_index
         ).view(-1)
-        trunk_softmax = softmax(trunk_max, action_batch_idx)
-        trunk_norm = self.trunk_norm(trunk_max, action_batch_idx)
-        trunk = torch.cat([trunk_max, trunk_softmax, trunk_norm,], dim=1,)
-        trunk = torch.cat([trunk, trunk * trunk_max], dim=1)
-        action_votes = self.actor_gate(trunk)
+        action_votes = global_max_pool(self.actor_gate(trunk), actions.action_index)
         action_idx = global_max_pool(actions.action_idx, actions.action_index)
 
         self.last_tensors["obj_att"] = obj_att
@@ -584,80 +624,26 @@ class GNNBase(NNBase):
         self.last_tensors["obj_ux_action"] = obj_ux_action
         self.last_tensors["leaf_ux_action"] = leaf_ux_action
 
-        # critic senses goal completion
-        critic_obj_indicator_order = torch.cat(
-            [obj_indicator_order.detach(), critic_obj_indicator], dim=1
-        )
-        critic_obj_ind_seq = pack_as_sequence(
-            critic_obj_indicator_order, objectives.batch
-        )
-        critic_obj_active_seq, critic_near_completion = self.critic_near_completion(
-            critic_obj_ind_seq
-        )
-        critic_obj_active = unpack_sequence(critic_obj_active_seq)[:, -1:]
         # layers * directions, batch, hidden_size
-        critic_near_completion = critic_near_completion[-1, :, -1:]
+        critic_near_completion = obj_active_mem[-1, :, -1:]
 
-        _critic_obj_active = safe_bc(
-            critic_obj_active, objectives_projection.field_index
-        )
+        # critic senses goal completion
         critic_active_steps = torch.tanh(
-            global_add_pool(critic_obj_active, objectives.batch) - 1
+            global_add_pool(obj_active_share, objectives.batch) - 1
         )
 
-        # critic senses dom
-        critic_conv_x = self.critic_conv(x.detach(), dom.dom_edge_index)
-        critic_conv_mp = torch.relu(global_max_pool(critic_conv_x, dom.batch))
-        critic_conv_ap = torch.relu(
-            global_add_pool(self.graph_size_norm(critic_conv_x, dom.batch), dom.batch)
-        )
+        # critic senses trunk
+        x_critic_input = trunk
 
-        # critic senses goal difficulty
-        critic_dom_ux_action = safe_bc(
-            dom_ux_action.detach(), objectives_projection.dom_index
-        )
-        critic_obj_ux_action = safe_bc(
-            obj_ux_action.detach(), objectives_projection.field_index
-        )
-        critic_obj_active = safe_bc(
-            obj_active.detach(), objectives_projection.field_index
-        )
-        critic_dom_obj_comp_ux_action = dom_obj_comp_ux_action.detach()
-        critic_obj_att = obj_att.detach()
-        x_critic_input = torch.cat(
-            [
-                obj_tag_similarities,
-                critic_obj_ux_action,
-                critic_dom_ux_action,
-                critic_obj_att,
-                critic_dom_obj_comp_ux_action,
-                safe_bc(critic_conv_x, objectives_projection.dom_index),
-            ],
-            dim=1,
-        )
-
-        critic_mp = self.critic_mp_score(x_critic_input) * _critic_obj_active
-        critic_ap = self.critic_ap_score(x_critic_input) * _critic_obj_active
+        critic_mp = self.critic_mp_score(x_critic_input)
+        critic_ap = self.critic_ap_score(x_critic_input)
 
         # max/add objective difficulty in batch
-        critic_mp = torch.relu(global_max_pool(critic_mp, objectives_projection.batch))
-        critic_ap = torch.relu(
-            global_add_pool(
-                self.graph_size_norm(critic_ap, objectives_projection.field_index),
-                objectives_projection.batch,
-            )
-        )
+        critic_mp = torch.relu(global_max_pool(critic_mp, actions.batch))
+        critic_ap = torch.tanh(global_add_pool(critic_ap, actions.batch))
 
         critic_x = torch.cat(
-            [
-                critic_mp,
-                critic_ap,
-                critic_conv_mp,
-                critic_conv_ap,
-                critic_active_steps,
-                critic_near_completion,
-            ],
-            dim=1,
+            [critic_mp, critic_ap, critic_active_steps, critic_near_completion,], dim=1,
         )
         critic_value = self.critic_gate(critic_x)
 

@@ -11,11 +11,11 @@ import torch_geometric
 
 from a2c_ppo_acktr import algo, utils
 from a2c_ppo_acktr.arguments import get_args
-from a2c_ppo_acktr.model import Policy
+from a2c_ppo_acktr.storage import RolloutStorage
 
 from fuzzdom.env import MiniWoBGraphEnvironment
-from fuzzdom.models import GNNBase
-from fuzzdom.storage import StorageReceipt, ReceiptRolloutStorage
+from fuzzdom.models import GNNBase, GraphPolicy
+from fuzzdom.storage import StorageReceipt
 from fuzzdom.vec_env import make_vec_envs
 from fuzzdom.distributions import NodeObjective
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
@@ -72,11 +72,12 @@ def main():
     else:
         print("No dom encoder")
         dom_encoder = None
-    actor_critic = Policy(
+    actor_critic = GraphPolicy(
         envs.observation_space.shape,
         gym.spaces.Discrete(NUM_ACTIONS),  # envs.action_space,
         base=GNNBase,
         base_kwargs={"dom_encoder": dom_encoder, "recurrent": args.recurrent_policy},
+        receipts=receipts,
     )
     # patch distributions to handle node based selection
     actor_critic.dist = NodeObjective()
@@ -129,13 +130,12 @@ def main():
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
     tensorboard_writer = SummaryWriter(log_dir=os.path.join("/tmp/log", ts_str))
 
-    rollouts = ReceiptRolloutStorage(
+    rollouts = RolloutStorage(
         args.num_steps,
         args.num_processes,
         (1,),  # envs.observation_space.shape,
         envs.action_space,
         actor_critic.recurrent_hidden_state_size,
-        receipts,
     )
 
     # resume from last save
@@ -193,7 +193,7 @@ def main():
                     action_log_prob,
                     recurrent_hidden_states,
                 ) = actor_critic.act(
-                    receipts.redeem(rollouts.obs[step]),
+                    rollouts.obs[step],
                     rollouts.recurrent_hidden_states[step],
                     rollouts.masks[step],
                 )
@@ -230,7 +230,7 @@ def main():
 
         with torch.no_grad():
             next_value = actor_critic.get_value(
-                receipts.redeem(rollouts.obs[-1]),
+                rollouts.obs[-1],
                 rollouts.recurrent_hidden_states[-1],
                 rollouts.masks[-1],
             ).detach()

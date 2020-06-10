@@ -55,11 +55,11 @@ VDomain = namedtuple("VDomain", ["key", "field", "value", "size"])
 
 def vectorize_projections(
     projections: dict,
-    source: nx.DiGraph,
+    source: Data,
     source_domain: str,
     final_domain: str,
     add_intersections: list = [],
-):
+) -> SubData:
     """
     Assumes source already has integer labels!
 
@@ -69,15 +69,15 @@ def vectorize_projections(
     """
     proj_domains = list(projections.keys())
     combinations = list(itertools.product(*map(enumerate, projections.values())))
-    t_edge_index = torch.tensor(list(source.edges)).t().contiguous()
-    num_nodes = source.number_of_nodes()
+    t_edge_index = source.edge_index
+    num_nodes = source.num_nodes
     final_size = len(combinations) * num_nodes
     v_domains = {
         key: VDomain(key, f"{key}_index", values, len(values))
         for key, values in projections.items()
     }
     v_domains[source_domain] = VDomain(
-        source_domain, f"{source_domain}_index", source.nodes, num_nodes
+        source_domain, f"{source_domain}_index", source, num_nodes,
     )
     v_domains[final_domain] = VDomain(
         final_domain, f"{final_domain}_index", combinations, len(combinations)
@@ -144,9 +144,9 @@ def vectorize_projections(
         # p: [(proj_index_0, proj_value_0), ...]
         k_edge_index = t_edge_index + k * num_nodes
         edges.append(k_edge_index)
-        for u, src_node in source.nodes(data=True):
+        for u in range(num_nodes):
             index += 1
-            node_index = src_node["index"]
+            node_index = source.index[u]
             data["index"][index] = index
             data[final_domain_key][index] = k
             data[source_domain_key][index] = node_index
@@ -166,11 +166,17 @@ def vectorize_projections(
                 )
 
     data["edge_index"] = torch.cat(edges, dim=1)
+    if source.edge_attr is not None:
+        data["edge_attr"] = source.edge_attr.repeat(len(combinations), 1)
+    data[f"br_{source_domain}_edge_index"] = torch.arange(
+        0, t_edge_index.shape[1]
+    ).repeat(len(combinations))
 
     indexes = {
         keys["p_domain_index"]: len(entries)
         for keys, (p_domain, entries) in zip(sp_keys, projections.items())
     }
+    indexes[f"br_{source_domain}_edge_index"] = t_edge_index.shape[1]
     indexes[final_domain_key] = len(combinations)
     indexes[source_domain_key] = num_nodes
     for keys, (p_domain, p_values) in zip(sp_keys, projections.items()):

@@ -82,9 +82,9 @@ def unpack_sequence(output_packed):
     )
 
 
-def scatter_dev(x, batch, eps=1e-6):
+def scatter_std_dev(x, batch, eps=1e-6):
     """
-    Compute standard deviation per batch indices
+    Compute standard deviation and mean per batch indices
     """
     indices, _counts = torch.unique(batch, sorted=True, return_counts=True)
     _counts = _counts.view(-1, 1)
@@ -93,4 +93,11 @@ def scatter_dev(x, batch, eps=1e-6):
     _mean = _sum / _counts
     _idev = (x - _mean[batch]) ** 2 / (_counts[batch] - 1)
     _dev = global_add_pool(_idev, batch) ** 0.5
-    return _dev
+    return _dev, _mean
+
+
+def scatter_dev(x, batch, eps=1e-6):
+    """
+    Compute standard deviation per batch indices
+    """
+    return scatter_std_dev(x, batch, eps)[0]
