@@ -110,7 +110,7 @@ class EdgeMask(nn.Module):
         super(EdgeMask, self).__init__()
         self.alpha = nn.Parameter(torch.tensor(1e-3))
         self.edge_fn = nn.Sequential(
-            init_xn(nn.Linear(edge_dim, 1), "sigmoid"), nn.Sigmoid(),
+            init_xn(nn.Linear(edge_dim, 1), "sigmoid"), nn.Sigmoid()
         )
         self.conv = APPNP(K=K, alpha=self.alpha)
         self.K = K
@@ -244,8 +244,7 @@ class GNNBase(NNBase):
         self.objective_ux_action_attr = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 3 * attr_similarity_size), "linear")
         )
-        # norm goal attention map before multiplying cosine distances
-        self.objective_comp_norm = InstanceNorm(1)
+        objective_indicator_size = 1
 
         self.objective_ux_action_fn = nn.Sequential(
             # init_r(nn.Linear(text_embed_size, text_embed_size)),
@@ -256,7 +255,6 @@ class GNNBase(NNBase):
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        objective_indicator_size = 1
         # + pos + focus + global focus
         objective_active_size = (
             action_one_hot_size + objective_indicator_size + 2 + 1 + 1
@@ -278,14 +276,16 @@ class GNNBase(NNBase):
             num_layers=2,
             # bidirectional=True,
         )
-        # [consensus, 1] x [ux action, consensus, norm consensus, active, goal compl indicator, dev] + (consensus - avg)
-        trunk_size = (action_one_hot_size + 5) * 2 + 1
+        # norm active step selection
+        self.objective_active_norm = InstanceNorm(1)
+        # [ux action, norm consensus * active, dev] + (consensus - avg), active*2
+        trunk_size = action_one_hot_size + 5
         # norm consensus
         self.trunk_norm = InstanceNorm(1)
         self.actor_gate = nn.Sequential(
-            init_xu(nn.Linear(trunk_size, trunk_size), "relu"),
+            init_xn(nn.Linear(trunk_size, trunk_size), "relu"),
             nn.ReLU(),
-            init_xn(nn.Linear(trunk_size, 1), "relu"),
+            init_ones(nn.Linear(trunk_size, 1), "relu"),
             nn.ReLU(),
         )
 
@@ -501,6 +501,10 @@ class GNNBase(NNBase):
         dom_interest = _obj_mask * _leaf_mask
         action_consensus = ux_action_consensus * dom_interest
 
+        # norm activity within each goal
+        trunk_norm = self.trunk_norm(action_consensus, actions.field_index)
+        self.last_tensors["trunk_norm"] = trunk_norm
+
         # begin determining active step
         # compute objective completeness indicators from DOM
         dom_dom_obj_ux_action = safe_bc(dom_ux_action, objectives_projection.dom_index)
@@ -510,15 +514,15 @@ class GNNBase(NNBase):
         dom_obj_comp = (
             (dom_obj_comp * obj_tag_similarities).max(dim=1, keepdim=True).values
         )
-        dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
-        dom_obj_comp_ux_action = (
-            (dom_dom_obj_ux_action * dom_obj_ux_action).max(dim=1, keepdim=True).values
-        )
+        # dom_obj_ux_action = safe_bc(obj_ux_action, objectives_projection.field_index)
+        # dom_obj_comp_ux_action = (
+        #    (dom_dom_obj_ux_action * dom_obj_ux_action).max(dim=1, keepdim=True).values
+        # )
 
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
-        dom_obj_indicator = dom_obj_comp * self.objective_comp_norm(
-            obj_att * dom_obj_comp_ux_action, objectives_projection.batch
+        dom_obj_indicator = dom_obj_comp * global_max_pool(
+            action_consensus, actions.dom_field_index
         )
 
         obj_indicator = torch.relu(
@@ -527,9 +531,7 @@ class GNNBase(NNBase):
 
         # determine if a goal has focus
         goal_focus = safe_bc(dom.focused, actions.dom_index)
-        goal_focus = global_max_pool(
-            goal_focus * action_consensus, actions.field_index,
-        )
+        goal_focus = global_max_pool(goal_focus * action_consensus, actions.field_index)
         has_focus = global_max_pool(goal_focus, objectives.batch)
 
         # pack on order embed and goal focus
@@ -575,8 +577,8 @@ class GNNBase(NNBase):
 
         obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
         obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
-        obj_active_share = unpack_sequence(obj_active_seq)[:, -1:]
-        obj_active = softmax(obj_active_share, objectives.batch)
+        obj_active_share = torch.sigmoid(unpack_sequence(obj_active_seq)[:, -1:])
+        obj_active = obj_active_share * (1 - obj_indicator)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
         self.last_tensors["obj_indicator"] = obj_indicator
@@ -584,24 +586,20 @@ class GNNBase(NNBase):
         self.last_tensors["obj_edge_weights"] = obj_ew
 
         # main action space activity
-        trunk_norm = self.trunk_norm(action_consensus, actions.batch)
-        trunk_dev, trunk_med = scatter_std_dev(trunk_norm, actions.batch)
-        trunk_dev = trunk_dev[actions.batch]
-        trunk_med = trunk_med[actions.batch]
-        trunk_obj_indicator = -safe_bc(dom_obj_indicator, actions.dom_field_index)
+        trunk_dev, trunk_med = scatter_std_dev(action_consensus, actions.field_index)
+        trunk_dev = trunk_dev[actions.field_index]
+        trunk_med = trunk_med[actions.field_index]
+        trunk_ap = _obj_active * action_consensus
         trunk = torch.cat(
             [
-                action_consensus,
-                trunk_norm,
-                _obj_active,
-                trunk_obj_indicator,
-                actions.action_one_hot,
+                trunk_ap,
+                trunk_ap - trunk_med,
+                trunk_ap * trunk_norm,
+                _obj_active * trunk_norm,
                 trunk_dev,
+                actions.action_one_hot,
             ],
             dim=1,
-        )
-        trunk = torch.cat(
-            [trunk, trunk * action_consensus, action_consensus - trunk_med], dim=1,
         )
 
         if SAFETY:
@@ -643,7 +641,7 @@ class GNNBase(NNBase):
         critic_ap = torch.tanh(global_add_pool(critic_ap, actions.batch))
 
         critic_x = torch.cat(
-            [critic_mp, critic_ap, critic_active_steps, critic_near_completion,], dim=1,
+            [critic_mp, critic_ap, critic_active_steps, critic_near_completion], dim=1
         )
         critic_value = self.critic_gate(critic_x)
 
