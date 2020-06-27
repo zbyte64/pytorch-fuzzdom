@@ -577,8 +577,10 @@ class GNNBase(NNBase):
 
         obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
         obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
-        obj_active_share = torch.sigmoid(unpack_sequence(obj_active_seq)[:, -1:])
-        obj_active = obj_active_share * (1 - obj_indicator)
+        # [-1, 1]
+        obj_active_share = unpack_sequence(obj_active_seq)[:, -1:]
+        # [0, 2]
+        obj_active = (1 + obj_active_share) * (1 - obj_indicator)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
         self.last_tensors["obj_indicator"] = obj_indicator
