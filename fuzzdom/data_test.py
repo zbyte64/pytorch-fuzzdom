@@ -4,7 +4,7 @@ import logging
 import networkx as nx
 import torch
 from torch_geometric.data import Batch, Data
-from .data import vectorize_projections, IndexedBatch
+from .data import vectorize_projections, IndexedBatch, from_networkx
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
@@ -20,13 +20,14 @@ def test_project_vectors():
         g.add_node(i, index=1)
         if i:
             g.add_edge(i - 1, i)
+    g_data = from_networkx(g)
     v = vectorize_projections(
         {
             "ux_action": [{"action_idx": i} for i in range(10, 15)],
             "field": [{"field_idx": i} for i in range(1, 3)],
             "leaf": [{"dom_idx": i} for i in range(7)],
         },
-        g,
+        g_data,
         source_domain="dom",
         final_domain="action",
         add_intersections=[("field", "ux_action"), ("ux_action", "field")],
@@ -66,13 +67,14 @@ def test_project_vectors_batch_packing():
         g.add_node(i, index=1)
         if i:
             g.add_edge(i - 1, i)
+    g_data = from_networkx(g)
     v1 = vectorize_projections(
         {
             "ux_action": [{"action_idx": i} for i in range(10, 15)],
             "field": [{"field_idx": i} for i in range(1, 3)],
             "leaf": [{"dom_idx": i} for i in range(7)],
         },
-        g,
+        g_data,
         source_domain="dom",
         final_domain="action",
         add_intersections=[("field", "ux_action")],
@@ -88,7 +90,7 @@ def test_project_vectors_batch_packing():
             "field": [{"field_idx": i} for i in range(31, 34)],
             "leaf": [{"dom_idx": i} for i in range(4)],
         },
-        g,
+        g_data,
         source_domain="dom",
         final_domain="action",
         add_intersections=[("field", "ux_action")],
@@ -133,13 +135,14 @@ def test_project_vectors_single_batch_packing():
         g.add_node(i, index=1)
         if i:
             g.add_edge(i - 1, i)
+    g_data = from_networkx(g)
     v1 = vectorize_projections(
         {
             "ux_action": [{"action_idx": i} for i in range(10, 15)],
             "field": [{"field_idx": i} for i in range(1, 3)],
             "leaf": [{"dom_idx": i} for i in range(7)],
         },
-        g,
+        g_data,
         source_domain="dom",
         final_domain="action",
         add_intersections=[("field", "ux_action")],
