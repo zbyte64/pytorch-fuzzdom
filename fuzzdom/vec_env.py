@@ -52,23 +52,30 @@ class FixEdgeAttr:
 
 
 class Delaunay:
+    make_fully_connected = KNNGraph(k=3)
+
     def __call__(self, data):
         pos = data.pos.cpu().numpy()
-        tri = scipy.spatial.Delaunay(pos, qhull_options="QJ")
-        face = torch.from_numpy(tri.simplices)
-        assert len(face.shape) == 2
-        assert face.shape[1] == 4
-        edge_index = torch.cat(
-            [
-                face[:, 0:2],
-                face[:, 1:3],
-                face[:, 2:4],
-                torch.cat([face[:, 3:4], face[:, 0:1]], dim=1),
-            ],
-            dim=0,
-        ).t()
-        assert edge_index.shape[0] == 2, str(edge_index.shape)
-        data.edge_index = edge_index.to(data.pos.device, torch.long)
+        assert len(pos.shape) == 2 and pos.shape[1] == 3, str(pos.shape)
+        if pos.shape[0] > 4:
+            tri = scipy.spatial.Delaunay(pos, qhull_options="QJ")
+            face = torch.from_numpy(tri.simplices)
+            assert len(face.shape) == 2
+            assert face.shape[1] == 4
+            edge_index = torch.cat(
+                [
+                    face[:, 0:2],
+                    face[:, 1:3],
+                    face[:, 2:4],
+                    torch.cat([face[:, 3:4], face[:, 0:1]], dim=1),
+                ],
+                dim=0,
+            ).t()
+            assert edge_index.shape[0] == 2, str(edge_index.shape)
+            data.edge_index = edge_index.to(data.pos.device, torch.long)
+        else:
+            # for small graphs
+            data = self.make_fully_connected(data)
         return data
 
 
@@ -79,14 +86,7 @@ class ToUndirected:
 
 
 TRANSFORMER = Compose(
-    [
-        Delaunay(),
-        ToUndirected(),
-        AddSelfLoops(),
-        Distance(),
-        Spherical(),
-        FixEdgeAttr(),
-    ]
+    [Delaunay(), ToUndirected(), AddSelfLoops(), Distance(), Spherical(), FixEdgeAttr()]
 )
 
 
@@ -343,6 +343,7 @@ class GraphGymWrapper(gym.Wrapper):
         dom_idx = selected_targets["dom_idx"]
         dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]
         field_value = list(self.last_state.fields.values)[field_idx]
+        assert isinstance(field_value, str), str(self.last_state.fields)
         self.prior_actions.append((action_id, dom_idx, field_idx))
         return (action_id, dom_ref, field_value)
 

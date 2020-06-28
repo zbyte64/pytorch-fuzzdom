@@ -21,9 +21,16 @@ async def test_action_chain():
     logger.info(url)
     logger.debug(await driver.get_page_source())
     await driver.wait_for_element(1, "input")
-    actions = FuzzyActionChains(driver, "Enter username and password and login")
-    actions.input_field("username", "BillyJane")
+    actions = FuzzyActionChains(
+        driver, "Enter username and password and login", error_value=-5
+    )
+    actions.input_field("email", "BillyJane")
     actions.input_field("password", "pas$word")
     actions.submit()
     score = await actions.async_perform()
-    assert score > 0
+    entered_username = await driver.execute_script(
+        "return document.getElementById('email').value;"
+    )
+    assert entered_username, str(entered_username)
+    html = await driver.execute_script("return document.documentElement.innerHTML;")
+    assert score > 0, html

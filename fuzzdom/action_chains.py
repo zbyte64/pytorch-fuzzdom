@@ -50,6 +50,7 @@ class FuzzyActionChains(object):
         max_steps = len(self.task_fields) * 4
         c = Counter()
         task_fields = OrderedDict()
+        fields = dict()
         for k, v in self.task_fields:
             c.update([k])
             n = c[k] - 1
@@ -58,8 +59,9 @@ class FuzzyActionChains(object):
             else:
                 target = k
             task_fields[target] = c
+            fields[target] = v
         return await self.async_run_task(
-            task_fields,
+            fields,
             self.utterance,
             max_steps,
             self.stop_condition,
@@ -82,7 +84,7 @@ class FuzzyActionChains(object):
         recurrent_hidden_states = torch.zeros(1, 128)
         obs = await self.env.async_reset()
         for i in range(max_steps):
-            obs_v = self.receipts.redeem(torch.tensor(obs))
+            obs_v = torch.tensor(obs)
             with torch.no_grad():
                 (
                     value,

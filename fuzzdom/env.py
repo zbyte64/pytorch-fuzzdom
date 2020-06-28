@@ -174,9 +174,10 @@ class ManagedWebInterface(WebInterface):
 
 
 async def send_keys(device, text: str, ref=None):
+    assert isinstance(text, str), str(text)
     if ref is not None:
         knows_ref = await device.execute_script(
-            f"return core.previousDOMInfo[{ref}] != null"
+            f"return core.previousDOMInfo['{ref}'] != null"
         )
         if knows_ref:
             await device.execute_script(
@@ -228,7 +229,7 @@ class MiniWoBGraphEnvironment(gym.Env):
         self._actions = [
             lambda ref, value: (
                 ref
-                and self.driver.execute_script(f"return core.elementClick({ref});")
+                and self.driver.execute_script(f"return core.elementClick('{ref}');")
                 or None
             ),
             lambda ref, value: send_keys(self.driver, value, ref),
@@ -308,6 +309,7 @@ class MiniWoBGraphEnvironment(gym.Env):
 
     async def async_step(self, action) -> tuple:
         action_id, ref, value = action
+        assert isinstance(value, str), str(value)
         assert ref in self.state.dom_graph, str(ref)
         f = self._actions[action_id]
 
