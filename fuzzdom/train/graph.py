@@ -3,21 +3,22 @@ import copy
 import glob
 import time
 from collections import deque
+import datetime
 
 import gym
 import numpy as np
 import torch
 import torch_geometric
 
+from tensorboardX import SummaryWriter
 from a2c_ppo_acktr import algo, utils
-from a2c_ppo_acktr.arguments import get_args
+from fuzzdom.arguments import get_args
 from a2c_ppo_acktr.storage import RolloutStorage
 
 from fuzzdom.env import MiniWoBGraphEnvironment
 from fuzzdom.models import GNNBase, GraphPolicy
 from fuzzdom.storage import StorageReceipt
 from fuzzdom.vec_env import make_vec_envs
-from fuzzdom.distributions import NodeObjective
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
 from fuzzdom.dir_paths import MINIWOB_HTML
 from fuzzdom import gail
@@ -51,9 +52,6 @@ def main():
     print("device", device, torch.cuda.is_available())
 
     task = args.env_name
-    if args.env_name == "PongNoFrameskip-v4":
-        args.env_name = "clickbutton"
-        task = "miniwob/click-button.html"
     if task == "levels":
         tasks = MINIWOB_CHALLENGES
     else:
@@ -64,27 +62,34 @@ def main():
         [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts
     )
 
-    if os.path.exists("./datadir/autoencoder.pt"):
-        dom_autoencoder = torch.load("./datadir/autoencoder.pt")
-        dom_encoder = dom_autoencoder.encoder
-        for param in dom_encoder.parameters():
-            param.requires_grad = False
+    if args.load_model:
+        print("Loadng previous model:", args.load_model)
+        actor_critic = torch.load(args.load_model)
+        actor_critic.receipts = receipts
     else:
-        print("No dom encoder")
-        dom_encoder = None
-    actor_critic = GraphPolicy(
-        envs.observation_space.shape,
-        gym.spaces.Discrete(NUM_ACTIONS),  # envs.action_space,
-        base=GNNBase,
-        base_kwargs={"dom_encoder": dom_encoder, "recurrent": args.recurrent_policy},
-        receipts=receipts,
-    )
-    # patch distributions to handle node based selection
-    actor_critic.dist = NodeObjective()
+
+        if os.path.exists("./datadir/autoencoder.pt"):
+            dom_autoencoder = torch.load("./datadir/autoencoder.pt")
+            dom_encoder = dom_autoencoder.encoder
+            for param in dom_encoder.parameters():
+                param.requires_grad = False
+        else:
+            print("No dom encoder")
+            dom_encoder = None
+        actor_critic = GraphPolicy(
+            envs.observation_space.shape,
+            gym.spaces.Discrete(NUM_ACTIONS),  # envs.action_space,
+            base=GNNBase,
+            base_kwargs={
+                "dom_encoder": dom_encoder,
+                "recurrent": args.recurrent_policy,
+            },
+            receipts=receipts,
+        )
     actor_critic.to(device)
     actor_critic.train()
-    if dom_encoder:
-        dom_encoder.eval()
+    if actor_critic.base.dom_encoder:
+        actor_critic.base.dom_encoder.eval()
 
     if args.algo == "a2c":
         agent = algo.A2C_ACKTR(
@@ -124,9 +129,6 @@ def main():
             ds, batch_size=args.gail_batch_size, shuffle=True, drop_last=True
         )
 
-    from tensorboardX import SummaryWriter
-    import datetime
-
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
     tensorboard_writer = SummaryWriter(log_dir=os.path.join("/tmp/log", ts_str))
 
@@ -138,7 +140,6 @@ def main():
         actor_critic.recurrent_hidden_state_size,
     )
 
-    # resume from last save
     if args.save_dir != "" and args.save_interval:
         save_path = os.path.join(args.save_dir, args.algo)
         try:
@@ -147,10 +148,6 @@ def main():
             pass
 
         model_path = os.path.join(save_path, args.env_name + ".pt")
-        if False and os.path.exists(model_path):
-            print("Loadng previous model:", model_path)
-            actor_critic = torch.load(model_path)
-            actor_critic.train()
 
     obs = envs.reset()
     rollouts.obs[0].copy_(torch.tensor(obs))

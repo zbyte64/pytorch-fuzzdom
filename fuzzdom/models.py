@@ -18,6 +18,7 @@ from torch_geometric.utils import softmax
 from a2c_ppo_acktr.model import NNBase, Policy
 from a2c_ppo_acktr.utils import init
 
+from .distributions import NodeObjective
 from .functions import *
 
 
@@ -37,6 +38,8 @@ class GraphPolicy(Policy):
     def __init__(self, *args, receipts, **kwargs):
         super(GraphPolicy, self).__init__(*args, **kwargs)
         self.receipts = receipts
+        # patch distributions to handle node based selection
+        self.dist = NodeObjective()
 
     def act(self, inputs, rnn_hxs, masks, deterministic=False):
         inputs = self.receipts.redeem(inputs)
