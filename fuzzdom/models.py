@@ -47,21 +47,18 @@ class GraphPolicy(Policy):
 
 
 class EdgeAttrs(nn.Module):
-    def __init__(self, input_dim, hidden_size=8, out_dim=1):
+    def __init__(self, input_dim, out_dim=1):
         super(EdgeAttrs, self).__init__()
-        self.node_encoder = nn.Sequential(
-            init_ot(nn.Linear(input_dim, hidden_size), "tanh"), nn.Tanh()
-        )
         self.edge_fn = nn.Sequential(
-            init_ot(nn.Linear(hidden_size * 3, hidden_size), "relu"),
+            init_ot(nn.Linear(input_dim * 3, input_dim), "relu"),
             nn.ReLU(),
-            init_ot(nn.Linear(hidden_size, out_dim), "sigmoid"),
+            init_xn(nn.Linear(input_dim, out_dim), "sigmoid"),
             nn.Sigmoid(),
         )
 
     def forward(self, x, edge_index):
-        x_src = self.node_encoder(x[edge_index[0]])
-        x_dst = self.node_encoder(x[edge_index[1]])
+        x_src = x[edge_index[0]]
+        x_dst = x[edge_index[1]]
         _x = torch.cat([x_src, x_dst, x_src - x_dst], dim=1)
         return self.edge_fn(_x)
 
@@ -169,15 +166,11 @@ class GNNBase(NNBase):
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
         self.action_decoder = FixedActionDecoder()
-        self.dom_fn = nn.Sequential(
-            init_xu(nn.Linear(query_input_dim, hidden_size - query_input_dim), "tanh"),
-            nn.Tanh(),
-        )
-        self.global_alpha = nn.Parameter(torch.tensor(0.1))
-        self.global_conv = APPNP(K=7, alpha=self.global_alpha, bias=False)
+        self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
 
         self.dom_ux_action_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, action_one_hot_size), "linear"),
+            # paste  & copy have equal weight
+            init_xn(nn.Linear(hidden_size, action_one_hot_size - 1), "linear"),
             nn.Softmax(dim=1),
         )
         self.dom_transitivity_fn = EdgeAttrs(hidden_size)
@@ -306,12 +299,11 @@ class GNNBase(NNBase):
             )
             x = torch.cat([x, _add_x], dim=1)
 
-        _add_x = self.dom_fn(x)
+        _add_x = self.global_conv(x, full_edges(dom.dom_edge_index))
 
         x = torch.cat([x, _add_x], dim=1)
-        proj_x = self.global_conv(x, full_edges(dom.dom_edge_index))
-        self.last_tensors["proj_x"] = proj_x
-        full_x = x + proj_x
+        self.last_tensors["conv_x"] = _add_x
+        full_x = x
 
         # leaves are targetable elements
         leaf_t_mask = leaves.mask.type(torch.float)
@@ -330,17 +322,8 @@ class GNNBase(NNBase):
         # infer action from dom nodes
         dom_ux_action = self.dom_ux_action_fn(full_x)
         # for dom action input == paste
-        _dom_ux_action_input = (dom_ux_action[:, 1] + dom_ux_action[:, 3]).view(
-            -1, 1
-        ) / 2
         dom_ux_action = torch.cat(
-            [
-                dom_ux_action[:, 0].view(-1, 1),
-                _dom_ux_action_input,
-                dom_ux_action[:, 2].view(-1, 1),
-                _dom_ux_action_input,
-            ],
-            dim=1,
+            [dom_ux_action[:, 0:], dom_ux_action[:, 1].view(-1, 1)], dim=1
         )
         leaf_ux_action = global_max_pool(
             safe_bc(dom_ux_action, leaves.dom_index) * leaves.mask, leaves.leaf_index
@@ -398,6 +381,7 @@ class GNNBase(NNBase):
                 > 0
             )
 
+        self.last_tensors["dom_obj_attr"] = dom_obj_attr
         self.last_tensors["obj_att_input"] = obj_att_input
         self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
 
