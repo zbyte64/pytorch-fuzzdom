@@ -3,12 +3,49 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 
 from torch_geometric.utils import add_self_loops
-from torch_geometric.nn import (
-    global_max_pool,
-    global_add_pool,
-    global_mean_pool,
-)
+from torch_geometric.nn import global_max_pool, global_add_pool, global_mean_pool
 from torch_scatter import scatter
+
+# do extra checks, useful for validating model changes
+SAFETY = True
+
+if SAFETY:
+    torch.set_printoptions(profile="full")
+    torch.autograd.set_detect_anomaly(True)
+
+
+def safe_bc(x, b, saturated=True):
+    """
+    Does a matrix broadcast but checks that the mask size is appropriate
+    """
+    m = None
+    if SAFETY:
+        assert len(x.shape) > 1
+        assert len(b.shape) == 1, "Mask should be 1D"
+        m = b.max().item() + 1
+        if saturated:
+            assert x.shape[0] == m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
+        else:
+            # mask takes a subsample
+            assert x.shape[0] >= m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
+    return x[b]
+
+
+def safe_bc_edges(x, b, saturated=True):
+    """
+    Does a matrix broadcast but checks that the mask size is appropriate
+    """
+    m = None
+    if SAFETY:
+        assert len(b.shape) == 1
+        assert len(x.shape) > 1
+        m = b.max().item() + 1
+        if saturated:
+            assert x.shape[0] == m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
+        else:
+            # mask takes a subsample
+            assert x.shape[0] >= m, f"Incomplete/Wrong mask {x.shape[0]} != {m}"
+    return x[b]
 
 
 def init(module, weight_init, bias_init, gain=1):
@@ -21,10 +58,10 @@ def init(module, weight_init, bias_init, gain=1):
 
 
 init_c = lambda m, c, nl="relu": init(
-    m, lambda x, gain: nn.init.constant_(x, c), lambda x: nn.init.constant_(x, 0),
+    m, lambda x, gain: nn.init.constant_(x, c), lambda x: nn.init.constant_(x, 0)
 )
 init_ones = lambda m, nl="relu": init(
-    m, lambda x, gain: nn.init.ones_(x), lambda x: nn.init.constant_(x, 0),
+    m, lambda x, gain: nn.init.ones_(x), lambda x: nn.init.constant_(x, 0)
 )
 init_xu = lambda m, nl="relu": init(
     m,
