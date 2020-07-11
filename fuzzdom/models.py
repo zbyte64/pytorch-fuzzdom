@@ -405,6 +405,12 @@ class GNNBase(NNBase):
             .values
         )
         action_consensus = ux_action_consensus * dom_interest
+        # a leaf mask with action pooled objective attention applied
+        action_weights = _leaf_mask * safe_bc(
+            global_max_pool(action_consensus, actions.action_index),
+            actions.action_index,
+        )
+        self.last_tensors["action_weights"] = action_weights
 
         # norm activity within each goal
         trunk_norm = self.trunk_norm(action_consensus, actions.field_index)
@@ -416,7 +422,7 @@ class GNNBase(NNBase):
             self.dom_objective_complete_fn(full_x), actions.dom_index
         )
         x_obj_indicator = global_max_pool(
-            x_dom_obj_comp * action_consensus, actions.field_index
+            x_dom_obj_comp * action_weights, actions.field_index
         )
         # [0 - 1]
         dom_obj_comp_attr = safe_bc(
@@ -426,10 +432,11 @@ class GNNBase(NNBase):
             (dom_obj_comp_attr * obj_tag_similarities).max(dim=1, keepdim=True).values
         )
 
+        self.last_tensors["x_dom_obj_comp"] = x_dom_obj_comp
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
         dom_obj_indicator = dom_obj_comp * global_max_pool(
-            action_consensus, actions.dom_field_index
+            action_weights, actions.dom_field_index
         )
 
         obj_indicator = torch.relu(
