@@ -363,18 +363,17 @@ class GNNBase(NNBase):
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(objectives.key)
         # infer interested dom attrs
-        # [:,:,0] = no op. [:,:,1] = goal target. [:,:,2] = goal completion.
-        dom_obj_attr = torch.softmax(
-            self.dom_objective_attr_fn(full_x).view(
-                full_x.shape[0], self.attr_similarity_size, 3
-            ),
-            dim=2,
+        # [:,:,0] = cutoff. [:,:,1] = goal target. [:,:,2] = goal completion.
+        dom_obj_attr = self.dom_objective_attr_fn(full_x).view(
+            full_x.shape[0], self.attr_similarity_size, 3
         )
-        dom_obj_int = safe_bc(dom_obj_attr[:, :, 1], objectives_projection.dom_index)
+        dom_obj_attr__op = safe_bc(dom_obj_attr, objectives_projection.dom_index)
+        dom_obj_int = F.softplus(dom_obj_attr__op[:, :, 1])
         # ux action tag sensitivities
-        obj_att_input = (
+        obj_att_input = torch.relu(
             (dom_obj_int * obj_tag_similarities).max(dim=1, keepdim=True).values
         )
+
         if SAFETY:
             assert (
                 global_max_pool(obj_att_input, objectives_projection.batch).min().item()
@@ -399,11 +398,7 @@ class GNNBase(NNBase):
             assert global_max_pool(_leaf_mask, actions.batch).min().item() > 0
 
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
-        dom_interest = (
-            (_leaf_mask * safe_bc(obj_att_input, actions.field_dom_index))
-            .max(dim=1, keepdim=True)
-            .values
-        )
+        dom_interest = _leaf_mask * safe_bc(obj_att_input, actions.field_dom_index)
         action_consensus = ux_action_consensus * dom_interest
         # a leaf mask with action pooled objective attention applied
         action_weights = _leaf_mask * safe_bc(
@@ -412,6 +407,16 @@ class GNNBase(NNBase):
         )
         self.last_tensors["action_weights"] = action_weights
 
+        # cutoff is dom attr based confidence score scaled to global goal confidence
+        # used for silencing noisy goal completion indicators
+        field_dom_attr_cutoff = torch.sigmoid(
+            dom_obj_attr__op[:, :, 0]
+        ) * global_max_pool(action_consensus, actions.field_dom_index)
+        dom_cuttoff = global_max_pool(
+            field_dom_attr_cutoff.max(dim=1, keepdim=True).values,
+            objectives_projection.dom_index,
+        )
+
         # norm activity within each goal
         trunk_norm = self.trunk_norm(action_consensus, actions.field_index)
         self.last_tensors["trunk_norm"] = trunk_norm
@@ -419,17 +424,18 @@ class GNNBase(NNBase):
         # begin determining active step
         # compute objective completeness indicators from DOM
         x_dom_obj_comp = safe_bc(
-            self.dom_objective_complete_fn(full_x), actions.dom_index
+            torch.relu(self.dom_objective_complete_fn(full_x) - dom_cuttoff),
+            actions.dom_index,
         )
         x_obj_indicator = global_max_pool(
             x_dom_obj_comp * action_weights, actions.field_index
         )
         # [0 - 1]
-        dom_obj_comp_attr = safe_bc(
-            dom_obj_attr[:, :, 2], objectives_projection.dom_index
-        )
-        dom_obj_comp = (
-            (dom_obj_comp_attr * obj_tag_similarities).max(dim=1, keepdim=True).values
+        dom_obj_comp_attr = F.softplus(dom_obj_attr__op[:, :, 2])
+        dom_obj_comp = torch.relu(
+            (dom_obj_comp_attr * obj_tag_similarities - field_dom_attr_cutoff)
+            .max(dim=1, keepdim=True)
+            .values
         )
 
         self.last_tensors["x_dom_obj_comp"] = x_dom_obj_comp
