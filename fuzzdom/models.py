@@ -416,7 +416,7 @@ class GNNBase(NNBase):
         # compute objective completeness indicators from DOM
         x_dom_obj_enabled = (
             safe_bc(self.dom_objective_enable_fn(full_x), actions.dom_index)
-            * _leaf_mask
+            * trunk_norm
         )
         # compute objective completeness with goal word similarities
         # [0 - 1]
@@ -428,18 +428,17 @@ class GNNBase(NNBase):
                 .values,
                 actions.field_dom_index,
             )
-            * _leaf_mask
+            * trunk_norm
         )
 
         self.last_tensors["x_dom_obj_enabled"] = x_dom_obj_enabled
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
-        dom_obj_focus = safe_bc(dom.focused, actions.dom_index) * _leaf_mask
+        dom_obj_focus = safe_bc(dom.focused, actions.dom_index) * trunk_norm
 
         action_indicators = global_max_pool(
             torch.cat(
-                [action_consensus, dom_obj_comp, x_dom_obj_enabled, dom_obj_focus],
-                dim=1,
+                [trunk_norm, dom_obj_comp, x_dom_obj_enabled, dom_obj_focus], dim=1
             ),
             actions.action_index,
         )
