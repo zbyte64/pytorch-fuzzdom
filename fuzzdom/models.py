@@ -177,13 +177,15 @@ class GNNBase(NNBase):
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 8
         self.objective_pos_conv = EdgeMask(4 + 1, 1)
+        # [ goal att, value ]
         self.dom_objective_attr_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, 3 * attr_similarity_size), "linear")
+            init_xn(nn.Linear(hidden_size, 2 * attr_similarity_size), "sigmoid"),
+            nn.Sigmoid(),
         )
-        self.dom_objective_complete_fn = nn.Sequential(
+        # [ enabled ]
+        self.dom_objective_enable_fn = nn.Sequential(
             init_xn(nn.Linear(hidden_size, 1), "sigmoid"), nn.Sigmoid()
         )
-        objective_indicator_size = 1
 
         self.objective_ux_action_fn = nn.Sequential(
             # init_r(nn.Linear(text_embed_size, text_embed_size)),
@@ -193,6 +195,11 @@ class GNNBase(NNBase):
             # nn.Softmax(dim=1),
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
+        )
+        objective_indicator_size = 1
+        # global_max_pool([action consensus, enabled, value similarity])
+        self.objective_looks_complete = nn.GRU(
+            input_size=3, hidden_size=8, num_layers=1
         )
         # + pos + focus + global focus
         objective_active_size = (
@@ -363,12 +370,12 @@ class GNNBase(NNBase):
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(objectives.key)
         # infer interested dom attrs
-        # [:,:,0] = cutoff. [:,:,1] = goal target. [:,:,2] = goal completion.
+        # [:,:,0] = goal target. [:,:,2] = goal completion. ; odds are cuttoff
         dom_obj_attr = self.dom_objective_attr_fn(full_x).view(
-            full_x.shape[0], self.attr_similarity_size, 3
+            full_x.shape[0], self.attr_similarity_size, 2
         )
         dom_obj_attr__op = safe_bc(dom_obj_attr, objectives_projection.dom_index)
-        dom_obj_int = F.softplus(dom_obj_attr__op[:, :, 1])
+        dom_obj_int = torch.sigmoid(dom_obj_attr__op[:, :, 0])
         # ux action tag sensitivities
         obj_att_input = torch.relu(
             (dom_obj_int * obj_tag_similarities).max(dim=1, keepdim=True).values
@@ -400,22 +407,6 @@ class GNNBase(NNBase):
         ux_action_consensus = _leaf_ux_action * _obj_ux_action
         dom_interest = _leaf_mask * safe_bc(obj_att_input, actions.field_dom_index)
         action_consensus = ux_action_consensus * dom_interest
-        # a leaf mask with action pooled objective attention applied
-        action_weights = _leaf_mask * safe_bc(
-            global_max_pool(action_consensus, actions.action_index),
-            actions.action_index,
-        )
-        self.last_tensors["action_weights"] = action_weights
-
-        # cutoff is dom attr based confidence score scaled to global goal confidence
-        # used for silencing noisy goal completion indicators
-        field_dom_attr_cutoff = torch.sigmoid(
-            dom_obj_attr__op[:, :, 0]
-        ) * global_max_pool(action_consensus, actions.field_dom_index)
-        dom_cuttoff = global_max_pool(
-            field_dom_attr_cutoff.max(dim=1, keepdim=True).values,
-            objectives_projection.dom_index,
-        )
 
         # norm activity within each goal
         trunk_norm = self.trunk_norm(action_consensus, actions.field_index)
@@ -423,32 +414,38 @@ class GNNBase(NNBase):
 
         # begin determining active step
         # compute objective completeness indicators from DOM
-        x_dom_obj_comp = safe_bc(
-            torch.relu(self.dom_objective_complete_fn(full_x) - dom_cuttoff),
-            actions.dom_index,
+        x_dom_obj_enabled = (
+            safe_bc(self.dom_objective_enable_fn(full_x), actions.dom_index)
+            * _leaf_mask
         )
-        x_obj_indicator = global_max_pool(
-            x_dom_obj_comp * action_weights, actions.field_index
-        )
+        # compute objective completeness with goal word similarities
         # [0 - 1]
-        dom_obj_comp_attr = F.softplus(dom_obj_attr__op[:, :, 2])
-        dom_obj_comp = torch.relu(
-            (dom_obj_comp_attr * obj_tag_similarities - field_dom_attr_cutoff)
-            .max(dim=1, keepdim=True)
-            .values
+        dom_obj_comp_attr = dom_obj_attr__op[:, :, 1]
+        dom_obj_comp = (
+            safe_bc(
+                (dom_obj_comp_attr * obj_tag_similarities)
+                .max(dim=1, keepdim=True)
+                .values,
+                actions.field_dom_index,
+            )
+            * _leaf_mask
         )
 
-        self.last_tensors["x_dom_obj_comp"] = x_dom_obj_comp
+        self.last_tensors["x_dom_obj_enabled"] = x_dom_obj_enabled
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
-        dom_obj_indicator = dom_obj_comp * global_max_pool(
-            action_weights, actions.dom_field_index
+        action_indicators = global_max_pool(
+            torch.cat([action_consensus, dom_obj_comp, x_dom_obj_enabled], dim=1),
+            actions.action_index,
         )
-
-        obj_indicator = torch.relu(
-            global_max_pool(dom_obj_indicator, objectives_projection.field_index)
+        action_ind_seq = pack_as_sequence(
+            action_indicators,
+            global_max_pool(actions.field_index, actions.action_index),
         )
-        obj_indicator = torch.max(obj_indicator, x_obj_indicator)
+        # flat fields
+        _, action_active_mem = self.objective_looks_complete(action_ind_seq)
+        # [-1, 1]
+        obj_indicator = action_active_mem[0, objectives.index, -1:]
 
         # determine if a goal has focus
         goal_focus = safe_bc(dom.focused, actions.dom_index)
