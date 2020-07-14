@@ -196,15 +196,15 @@ class GNNBase(NNBase):
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        objective_indicator_size = 1
-        # global_max_pool([action consensus, enabled, value similarity])
+        # global_max_pool([action consensus, enabled, value similarity, has_focus])
+        self.objective_indicator_size = objective_indicator_size = 4
         self.objective_looks_complete = nn.GRU(
-            input_size=3, hidden_size=8, num_layers=1
+            input_size=objective_indicator_size,
+            hidden_size=objective_indicator_size,
+            num_layers=1,
         )
-        # + pos + focus + global focus
-        objective_active_size = (
-            action_one_hot_size + objective_indicator_size + 2 + 1 + 1
-        )
+        # + pos encoding
+        objective_active_size = action_one_hot_size + objective_indicator_size + 2
         if recurrent:
             # dom + pos + goal indicators
             goal_dom_size = hidden_size + objective_active_size
@@ -224,7 +224,7 @@ class GNNBase(NNBase):
         )
         # norm active step selection
         self.objective_active_norm = InstanceNorm(1)
-        # [ux action, norm consensus * active, dev] + (consensus - avg), active*2
+        # trunk_ap, trunk_ap - trunk_med, trunk_ap * trunk_norm, active * trunk_norm, trunk_dev, action_one_hot
         trunk_size = action_one_hot_size + 5
         # norm consensus
         self.trunk_norm = InstanceNorm(1)
@@ -434,8 +434,13 @@ class GNNBase(NNBase):
         self.last_tensors["x_dom_obj_enabled"] = x_dom_obj_enabled
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
+        dom_obj_focus = safe_bc(dom.focused, actions.dom_index) * _leaf_mask
+
         action_indicators = global_max_pool(
-            torch.cat([action_consensus, dom_obj_comp, x_dom_obj_enabled], dim=1),
+            torch.cat(
+                [action_consensus, dom_obj_comp, x_dom_obj_enabled, dom_obj_focus],
+                dim=1,
+            ),
             actions.action_index,
         )
         action_ind_seq = pack_as_sequence(
@@ -445,26 +450,15 @@ class GNNBase(NNBase):
         # flat fields
         _, action_active_mem = self.objective_looks_complete(action_ind_seq)
         # [-1, 1]
-        obj_indicator = action_active_mem[0, objectives.index, -1:]
-
-        # determine if a goal has focus
-        goal_focus = safe_bc(dom.focused, actions.dom_index)
-        goal_focus = global_max_pool(goal_focus * action_consensus, actions.field_index)
-        has_focus = global_max_pool(goal_focus, objectives.batch)
+        obj_indicator = action_active_mem[
+            0, objectives.index, -self.objective_indicator_size :
+        ]
 
         # pack on order embed and goal focus
         obj_indicator_order = torch.cat(
-            [
-                safe_bc(has_focus, objectives.batch),
-                goal_focus,
-                obj_ux_action,
-                obj_indicator,
-                1 - objectives.order,
-                objectives.is_last,
-            ],
+            [obj_ux_action, obj_indicator, 1 - objectives.order, objectives.is_last],
             dim=1,
         )
-        assert obj_indicator_order.shape[1] == 9, str(obj_indicator_order.shape)
 
         if self.is_recurrent:
             goal_dom_input = torch.cat(
@@ -496,9 +490,7 @@ class GNNBase(NNBase):
         obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
         obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
         # [-1, 1]
-        obj_active_share = unpack_sequence(obj_active_seq)[:, -1:]
-        # [0, 2]
-        obj_active = (1 + obj_active_share) * (1 - obj_indicator)
+        obj_active = unpack_sequence(obj_active_seq)[:, -1:]
         _obj_active = safe_bc(obj_active, actions.field_index)
 
         self.last_tensors["obj_indicator"] = obj_indicator
@@ -545,7 +537,7 @@ class GNNBase(NNBase):
 
         # critic senses goal completion
         critic_active_steps = torch.tanh(
-            global_add_pool(obj_active_share, objectives.batch) - 1
+            global_add_pool(obj_active, objectives.batch) - 1
         )
 
         # critic senses trunk
