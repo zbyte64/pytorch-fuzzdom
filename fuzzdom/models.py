@@ -161,7 +161,7 @@ class GNNBase(NNBase):
         self.dom_encoder = dom_encoder
 
         action_one_hot_size = 4  # 5
-        query_input_dim = 6 + 3 * text_embed_size
+        query_input_dim = 9 + 2 * text_embed_size
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
@@ -272,11 +272,13 @@ class GNNBase(NNBase):
             [
                 dom.tag,
                 dom.classes,
-                dom.text,
+                dom.radio_value,
                 dom.rx,
                 dom.ry,
-                dom.width * dom.height,
-                dom.top * dom.left,
+                dom.width,
+                dom.height,
+                dom.top,
+                dom.left,
                 dom.focused,
                 dom.depth,
             ],

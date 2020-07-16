@@ -206,6 +206,9 @@ def get_dom_leaves(source: nx.DiGraph):
     return list(filter(lambda n: source.out_degree(n) == 1, source.nodes))
 
 
+RADIO_VALUES = {"true": 1.0, "on": 1.0, "false": -1.0, "off": -1.0}
+
+
 def encode_dom_graph(g: nx.DiGraph, encode_with=None):
     assert len(g)
     numeric_map = {}
@@ -220,6 +223,7 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         encode_with = {
             "text": short_embed,
             "value": short_embed,
+            "radio_value": tuplize(lambda x: RADIO_VALUES.get(x, 0.0)),
             "tag": short_embed,
             "classes": short_embed,
             "rx": tuplize(lambda x: minmax_scale(x, -max_rx, max_rx)),
