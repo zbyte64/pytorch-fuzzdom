@@ -526,7 +526,8 @@ class GNNBase(NNBase):
         action_batch_idx = global_max_pool(
             actions.batch.view(-1, 1), actions.action_index
         ).view(-1)
-        action_votes = global_max_pool(self.actor_gate(trunk), actions.action_index)
+        action_trunk = global_max_pool(trunk, actions.action_index)
+        action_votes = self.actor_gate(action_trunk)
         action_idx = global_max_pool(actions.action_idx, actions.action_index)
 
         self.last_tensors["leaves_att"] = leaves_att
@@ -537,19 +538,17 @@ class GNNBase(NNBase):
         critic_near_completion = obj_active_mem[-1, :, -1:]
 
         # critic senses goal completion
-        critic_active_steps = torch.tanh(
-            global_add_pool(obj_active, objectives.batch) - 1
-        )
+        critic_active_steps = torch.tanh(global_add_pool(obj_active, objectives.batch))
 
         # critic senses trunk
-        x_critic_input = trunk
+        x_critic_input = action_trunk
 
         critic_mp = self.critic_mp_score(x_critic_input)
         critic_ap = self.critic_ap_score(x_critic_input)
 
         # max/add objective difficulty in batch
-        critic_mp = torch.relu(global_max_pool(critic_mp, actions.batch))
-        critic_ap = torch.tanh(global_add_pool(critic_ap, actions.batch))
+        critic_mp = torch.relu(global_max_pool(critic_mp, action_batch_idx))
+        critic_ap = torch.tanh(global_add_pool(critic_ap, action_batch_idx))
 
         critic_x = torch.cat(
             [critic_mp, critic_ap, critic_active_steps, critic_near_completion], dim=1
