@@ -77,7 +77,7 @@ def vectorize_projections(
         for key, values in projections.items()
     }
     v_domains[source_domain] = VDomain(
-        source_domain, f"{source_domain}_index", source, num_nodes,
+        source_domain, f"{source_domain}_index", source, num_nodes
     )
     v_domains[final_domain] = VDomain(
         final_domain, f"{final_domain}_index", combinations, len(combinations)
@@ -168,15 +168,11 @@ def vectorize_projections(
     data["edge_index"] = torch.cat(edges, dim=1)
     if source.edge_attr is not None:
         data["edge_attr"] = source.edge_attr.repeat(len(combinations), 1)
-    data[f"br_{source_domain}_edge_index"] = torch.arange(
-        0, t_edge_index.shape[1]
-    ).repeat(len(combinations))
 
     indexes = {
         keys["p_domain_index"]: len(entries)
         for keys, (p_domain, entries) in zip(sp_keys, projections.items())
     }
-    indexes[f"br_{source_domain}_edge_index"] = t_edge_index.shape[1]
     indexes[final_domain_key] = len(combinations)
     indexes[source_domain_key] = num_nodes
     for keys, (p_domain, p_values) in zip(sp_keys, projections.items()):
@@ -191,8 +187,12 @@ def vectorize_projections(
     return data
 
 
-def broadcast_edges(edges, num_nodes, target_dim):
-    return torch.cat([edges + k * num_nodes for k in range(target_dim)], dim=1)
+def broadcast_edges(
+    subdata: SubData, edges: torch.Tensor, n_combinations: int, key: str
+):
+    subdata[key] = torch.arange(0, edges.shape[1]).repeat(n_combinations)
+    subdata[f"__{key}__"] = edges.shape[1]
+    return subdata
 
 
 class TupleBatch:

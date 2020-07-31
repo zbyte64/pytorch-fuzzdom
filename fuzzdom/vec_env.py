@@ -71,8 +71,9 @@ class Delaunay:
                 ],
                 dim=0,
             ).t()
+            edge_index = edge_index.to(data.pos.device, torch.long)
             assert edge_index.shape[0] == 2, str(edge_index.shape)
-            data.edge_index = edge_index.to(data.pos.device, torch.long)
+            data.edge_index = edge_index
         else:
             # for small graphs
             data = self.make_fully_connected(data)
@@ -85,9 +86,11 @@ class ToUndirected:
         return data
 
 
-TRANSFORMER = Compose(
+SPATIAL_TRANSFORMER = Compose(
     [Delaunay(), ToUndirected(), AddSelfLoops(), Distance(), Spherical(), FixEdgeAttr()]
 )
+
+DOM_TRANSFORMER = Compose([ToUndirected(), Distance(), Spherical(), FixEdgeAttr()])
 
 
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
@@ -95,8 +98,12 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     e_fields = encode_fields(graph_state.fields)
 
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
+    # prefix dom data edges and attributes with `dom` and `spatial`
+    dom_data = DOM_TRANSFORMER(dom_data)
     dom_data.dom_edge_index = dom_data.edge_index
-    dom_data = TRANSFORMER(dom_data)
+    dom_data.dom_edge_attr = dom_data.edge_attr
+    dom_data.edge_attr = None
+    dom_data = SPATIAL_TRANSFORMER(dom_data)
     dom_data.spatial_edge_index = dom_data.edge_index
 
     fields_projection_data = vectorize_projections(
@@ -114,6 +121,17 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     )
     # mask is leaf nodes
     leaves_data.mask = (leaves_data.dom_idx == leaves_data.dom_index).view(-1, 1)
+    # prefix leaves data edges and attributes with `dom` and `spatial`
+    leaves_data.spatial_edge_attr = leaves_data.edge_attr
+    leaves_data.dom_edge_attr = dom_data.dom_edge_attr.repeat(len(leaves), 1)
+    broadcast_edges(
+        leaves_data, dom_data.spatial_edge_index, len(leaves), "br_spatial_edge_index"
+    )
+    broadcast_edges(
+        leaves_data, dom_data.dom_edge_index, len(leaves), "br_dom_edge_index"
+    )
+    leaves_data.spatial_edge_index = leaves_data.edge_index
+    leaves_data.dom_edge_index = dom_data.dom_edge_index.repeat(1, len(leaves))
     actions_data = vectorize_projections(
         {
             "ux_action": [
