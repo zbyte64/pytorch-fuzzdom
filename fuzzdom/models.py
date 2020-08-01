@@ -160,7 +160,7 @@ class GNNBase(NNBase):
 
         self.dom_encoder = dom_encoder
 
-        action_one_hot_size = 4  # 5
+        action_one_hot_size = 4  # 5 to enable wait
         query_input_dim = 9 + 2 * text_embed_size
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
@@ -170,12 +170,18 @@ class GNNBase(NNBase):
 
         self.dom_ux_action_fn = nn.Sequential(
             # paste  & copy have equal weight
+            nn.Dropout(),
             init_xn(nn.Linear(hidden_size, action_one_hot_size - 1), "linear"),
             nn.Softmax(dim=1),
         )
         self.dom_transitivity_fn = EdgeAttrs(hidden_size)
+        self.dom_description_fn = nn.Sequential(
+            nn.Dropout(),
+            init_xu(nn.Linear(hidden_size, text_embed_size), "tanh"),
+            nn.Tanh(),
+        )
         # attr similarities
-        self.attr_similarity_size = attr_similarity_size = 8
+        self.attr_similarity_size = attr_similarity_size = 10
         # edge attrs + dom_transitivity_fn
         self.leaves_pos_conv = EdgeMask(4 + 1, 1)
         self.leaves_dom_conv = EdgeMask(4 + 1, 1)
@@ -185,8 +191,11 @@ class GNNBase(NNBase):
             nn.Sigmoid(),
         )
         # [ enabled ]
+        self.dom_objective_enable_size = 2
         self.dom_objective_enable_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, 1), "sigmoid"), nn.Sigmoid()
+            nn.Dropout(),
+            init_xn(nn.Linear(hidden_size, self.dom_objective_enable_size), "sigmoid"),
+            nn.Sigmoid(),
         )
 
         self.objective_ux_action_fn = nn.Sequential(
@@ -198,17 +207,18 @@ class GNNBase(NNBase):
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        # global_max_pool([action consensus, enabled, value similarity, has_focus])
+        # enabled, value similarity, has_focus
         self.objective_indicator_size = objective_indicator_size = (
-            4 + action_one_hot_size
+            2 + self.dom_objective_enable_size
         )
-        self.objective_looks_complete = nn.GRU(
-            input_size=objective_indicator_size,
-            hidden_size=objective_indicator_size,
-            num_layers=1,
+        self.status_indicators_fn = nn.Sequential(
+            init_xn(
+                nn.Linear(objective_indicator_size, objective_indicator_size), "sigmoid"
+            ),
+            nn.Sigmoid(),
         )
         # + pos encoding
-        objective_active_size = objective_indicator_size + 2
+        objective_active_size = objective_indicator_size + 2 + action_one_hot_size
         if recurrent:
             # dom + pos + goal indicators
             goal_dom_size = hidden_size + objective_active_size
@@ -226,22 +236,19 @@ class GNNBase(NNBase):
             num_layers=2,
             # bidirectional=True,
         )
-        # norm active step selection
-        self.objective_active_norm = InstanceNorm(1)
-        # consensus, norm, dom interest, leaf att, goal mask, ux action mask, value mask, enabled mask + [GRU indicators]
-        trunk_size = 8 + objective_active_size + objective_indicator_size
+        # consensus, norm, dom interest, leaf att, goal mask, ux action mask, [Goal indicators], [GRU indicators]
+        trunk_size = 6 + objective_active_size + objective_indicator_size
         # norm consensus
         self.trunk_norm = InstanceNorm(1)
-        self.trunk_conv = SAGEConv(trunk_size, trunk_size)
         self.actor_gate = nn.Sequential(
-            init_ot(nn.Linear(2 * trunk_size, trunk_size), "relu"),
+            init_xu(nn.Linear(trunk_size, trunk_size), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(trunk_size, 1), "relu"),
             nn.ReLU(),
         )
 
         critic_embed_size = 16
-        critic_size = 2 * trunk_size
+        critic_size = trunk_size
         self.critic_mp_score = nn.Sequential(
             init_xu(nn.Linear(critic_size, critic_embed_size), "relu"),
             nn.ReLU(),
@@ -254,7 +261,6 @@ class GNNBase(NNBase):
             init_xn(nn.Linear(critic_embed_size, critic_embed_size), "sigmoid"),
             nn.Sigmoid(),
         )
-        self.graph_size_norm = GraphSizeNorm()
         critic_gate_size = (
             2 * critic_embed_size + 2 * objective_active_size
         )  # active steps, near_completion
@@ -366,6 +372,16 @@ class GNNBase(NNBase):
             safe_bc(objectives[obj], objectives_projection.field_index),
             dim=1,
         ).view(-1, 1)
+        dom_desc = self.dom_description_fn(full_x)
+        _dom_desc = safe_bc(dom_desc, objectives_projection.dom_index)
+        dom_desc_key_sim = F.cosine_similarity(
+            _dom_desc, safe_bc(objectives.key, objectives_projection.field_index), dim=1
+        ).view(-1, 1)
+        dom_desc_query_sim = F.cosine_similarity(
+            _dom_desc,
+            safe_bc(objectives.query, objectives_projection.field_index),
+            dim=1,
+        ).view(-1, 1)
         obj_tag_similarities = torch.relu(
             torch.cat(
                 [
@@ -377,6 +393,8 @@ class GNNBase(NNBase):
                     obj_sim("classes", "query"),
                     obj_sim("tag", "key"),
                     obj_sim("tag", "query"),
+                    dom_desc_key_sim,
+                    dom_desc_query_sim,
                 ],
                 dim=1,
             )
@@ -438,58 +456,36 @@ class GNNBase(NNBase):
 
         # begin determining active step
         # compute objective completeness indicators from DOM
-        _x_dom_obj_enabled = safe_bc(
+        x_dom_obj_enabled = safe_bc(
             self.dom_objective_enable_fn(full_x), actions.dom_index
         )
-        x_dom_obj_enabled = (_x_dom_obj_enabled) * trunk_norm
         # compute objective completeness with goal word similarities
         # [0 - 1]
         dom_obj_comp_attr = dom_obj_attr__op[:, :, 1]
-        _dom_obj_comp = safe_bc(
+        dom_obj_comp = safe_bc(
             (dom_obj_comp_attr * obj_tag_similarities).max(dim=1, keepdim=True).values,
             actions.field_dom_index,
         )
-        dom_obj_comp = _dom_obj_comp * trunk_norm
 
         self.last_tensors["x_dom_obj_enabled"] = x_dom_obj_enabled
         self.last_tensors["dom_obj_comp"] = dom_obj_comp
 
-        dom_obj_focus = safe_bc(dom.focused, actions.dom_index) * trunk_norm
+        dom_obj_focus = safe_bc(dom.focused, actions.dom_index)
 
-        action_indicators = global_max_pool(
-            torch.cat(
-                [
-                    action_consensus,
-                    dom_obj_comp,
-                    x_dom_obj_enabled,
-                    dom_obj_focus,
-                    safe_bc(obj_ux_action, actions.field_index),
-                ],
-                dim=1,
-            ),
-            actions.action_index,
+        action_status_indicators = global_max_pool(
+            torch.cat([dom_obj_comp, x_dom_obj_enabled, dom_obj_focus], dim=1)
+            * trunk_norm,
+            actions.index,
         )
-        assert action_indicators.shape[1] == 8, str(action_indicators.shape)
-        action_ind_seq = pack_as_sequence(
-            action_indicators,
-            global_max_pool(actions.field_index, actions.action_index),
+        action_status_indicators = self.status_indicators_fn(action_status_indicators)
+        status_indicators = global_max_pool(
+            safe_bc(action_status_indicators, actions.index), actions.field_index
         )
-        # flat fields
-        action_active_seq, action_active_mem = self.objective_looks_complete(
-            action_ind_seq
-        )
-        # [-1, 1]
-        # layers * directions, batch, hidden_size
-        obj_indicator = action_active_mem[
-            -1, objectives.index, -self.objective_indicator_size :
-        ]
-        _action_active = action_active_mem[
-            -1, actions.field_index, -self.objective_indicator_size :
-        ]
 
         # pack on order embed and goal focus
         obj_indicator_order = torch.cat(
-            [obj_indicator, objectives.order, objectives.is_last], dim=1
+            [status_indicators, objectives.order, objectives.is_last, obj_ux_action],
+            dim=1,
         )
 
         if self.is_recurrent:
@@ -525,7 +521,7 @@ class GNNBase(NNBase):
         obj_active = unpack_sequence(obj_active_seq)
         _obj_active = safe_bc(obj_active, actions.field_index)
 
-        self.last_tensors["obj_indicator"] = obj_indicator
+        self.last_tensors["status_indicators"] = status_indicators
         self.last_tensors["obj_active"] = obj_active
 
         # main action space activity
@@ -535,18 +531,14 @@ class GNNBase(NNBase):
                 action_consensus,
                 trunk_norm,
                 dom_interest,
+                action_status_indicators,
                 _obj_active,
-                _action_active,
                 _leaf_mask,
                 _obj_att_input,
                 ux_action_consensus,
-                _dom_obj_comp,
-                _x_dom_obj_enabled,
             ],
             dim=1,
         )
-        _add_trunk = self.trunk_conv(trunk, actions.edge_index)
-        trunk = torch.cat([trunk, _add_trunk], dim=1)
 
         if SAFETY:
             assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
