@@ -167,18 +167,16 @@ class GNNBase(NNBase):
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
         self.action_decoder = FixedActionDecoder()
         self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
+        self.global_dropout = nn.Dropout()
 
         self.dom_ux_action_fn = nn.Sequential(
             # paste  & copy have equal weight
-            nn.Dropout(),
             init_xn(nn.Linear(hidden_size, action_one_hot_size - 1), "linear"),
             nn.Softmax(dim=1),
         )
         self.dom_transitivity_fn = EdgeAttrs(hidden_size)
         self.dom_description_fn = nn.Sequential(
-            nn.Dropout(),
-            init_xu(nn.Linear(hidden_size, text_embed_size), "tanh"),
-            nn.Tanh(),
+            init_xu(nn.Linear(hidden_size, text_embed_size), "tanh"), nn.Tanh()
         )
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 10
@@ -193,7 +191,6 @@ class GNNBase(NNBase):
         # [ enabled ]
         self.dom_objective_enable_size = 2
         self.dom_objective_enable_fn = nn.Sequential(
-            nn.Dropout(),
             init_xn(nn.Linear(hidden_size, self.dom_objective_enable_size), "sigmoid"),
             nn.Sigmoid(),
         )
@@ -323,7 +320,7 @@ class GNNBase(NNBase):
 
         x = torch.cat([x, _add_x], dim=1)
         self.last_tensors["conv_x"] = _add_x
-        full_x = x
+        full_x = self.global_dropout(x)
 
         # leaves are targetable elements
         leaf_t_mask = leaves.mask.type(torch.float)
@@ -491,7 +488,7 @@ class GNNBase(NNBase):
         if self.is_recurrent:
             goal_dom_input = torch.cat(
                 [
-                    safe_bc(x, objectives_projection.dom_index),
+                    safe_bc(full_x, objectives_projection.dom_index),
                     safe_bc(obj_indicator_order, objectives_projection.field_index),
                 ],
                 dim=1,
