@@ -1,3 +1,4 @@
+from inspect import signature
 import torch
 from torch import nn
 from torch_geometric.nn import (
@@ -88,6 +89,34 @@ class EdgeMask(nn.Module):
         return fill, edge_weights
 
 
+class DirectionalPropagation(nn.Module):
+    def __init__(self, hidden_size, transitivity_size, edge_attr_size, mask_dim, K):
+        super(DirectionalPropagation, self).__init__()
+        edge_dim = transitivity_size + edge_attr_size
+        self.dom_transitivity_fn = EdgeAttrs(hidden_size, transitivity_size)
+        self.dom_edge_mask = EdgeMask(edge_dim, mask_dim, K)
+        self.pos_edge_mask = EdgeMask(edge_dim, mask_dim, K)
+
+    def forward(self, x, dom, projection, mask):
+        spatial_edge_trans = self.dom_transitivity_fn(x, dom.spatial_edge_index)
+        dom_edge_trans = self.dom_transitivity_fn(x, dom.dom_edge_index)
+        _spatial_edge_trans = safe_bc_edges(
+            spatial_edge_trans, projection.br_spatial_edge_index
+        )
+        pos_mask, pos_mask_ew = self.pos_edge_mask(
+            torch.cat([projection.spatial_edge_attr, _spatial_edge_trans], dim=1),
+            mask,
+            projection.spatial_edge_index,
+        )
+        _dom_edge_trans = safe_bc_edges(dom_edge_trans, projection.br_dom_edge_index)
+        dom_mask, dom_mask_ew = self.dom_edge_mask(
+            torch.cat([projection.dom_edge_attr, _dom_edge_trans], dim=1),
+            mask,
+            projection.dom_edge_index,
+        )
+        return torch.max(mask, torch.max(pos_mask, dom_mask))
+
+
 class FixedActionDecoder(nn.Module):
     def __init__(self):
         super(FixedActionDecoder, self).__init__()
@@ -145,6 +174,14 @@ class FixedActionDecoder(nn.Module):
         return ret.view(batch_size, action_size)
 
 
+def submodule(target_domain=None):
+    def f(func):
+        func.__target_domain__ = target_domain
+        return func
+
+    return f
+
+
 class GNNBase(NNBase):
     def __init__(
         self,
@@ -176,23 +213,26 @@ class GNNBase(NNBase):
             nn.Softmax(dim=1),
         )
         transitivity_size = 4
-        self.dom_transitivity_fn = EdgeAttrs(hidden_size, transitivity_size)
+        self.leaf_prop = DirectionalPropagation(
+            hidden_size, transitivity_size, edge_attr_size, mask_dim=1, K=5
+        )
+        self.goal_prop = DirectionalPropagation(
+            hidden_size, transitivity_size, edge_attr_size, mask_dim=1, K=5
+        )
+        self.value_prop = DirectionalPropagation(
+            hidden_size, transitivity_size, edge_attr_size, mask_dim=1, K=5
+        )
+
         self.dom_description_fn = nn.Sequential(
             init_xu(nn.Linear(hidden_size, text_embed_size), "tanh"), nn.Tanh()
         )
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 10
-        # edge attrs + dom_transitivity_fn
-        self.leaves_pos_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
-        self.leaves_dom_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
         # [ goal att, value ]
         self.dom_objective_attr_fn = nn.Sequential(
             init_xn(nn.Linear(hidden_size, 2 * attr_similarity_size), "linear"),
             nn.Softplus(),
         )
-        # edge_attrs + dom_transitivity_fn
-        self.objective_pos_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
-        self.objective_dom_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
         # [ enabled ]
         self.dom_objective_enable_size = 3
         self.dom_objective_enable_fn = nn.Sequential(
@@ -272,16 +312,38 @@ class GNNBase(NNBase):
             init_xn(nn.Linear(critic_embed_size, 1), "linear"),
         )
 
-    def forward(self, inputs, rnn_hxs, masks):
-        from torch_geometric.data import Batch, Data
+    def resolve(self, func, resolving=None):
+        """
+        Call a method whose arguments are tensors resolved by matching their name to a self method
+        """
+        fname = func.__name__
+        deps = signature(func)
 
-        assert isinstance(inputs, tuple), str(type(inputs))
-        assert all(map(lambda x: isinstance(x, Batch), inputs))
-        dom, objectives, objectives_projection, leaves, actions, history = inputs
-        assert actions.edge_index is not None, str(inputs)
-        self.last_tensors = {}
+        if fname not in self.last_tensors:
+            # collect dependencies
+            resolving = resolving or {fname}
+            kwargs = {}
+            for param in deps.parameters:
+                if param == "self":
+                    continue
+                if param not in self.last_tensors:
+                    assert (
+                        param not in resolving
+                    ), f"{fname} has circular dependency through {param}"
+                    resolving.add(param)
+                    assert hasattr(self, param), f"{fname} has unmet dependency {param}"
+                    self.last_tensors[param] = self.resolve(
+                        getattr(self, param), resolving
+                    )
+                kwargs[param] = self.last_tensors[param]
+            result = func(**kwargs)
+            assert result is not None, f"Bad return value: {fname}"
+            self.last_tensors[fname] = result
+        return self.last_tensors[fname]
 
-        x = torch.cat(
+    @submodule("dom")
+    def x(self, dom):
+        return torch.cat(
             [
                 dom.tag,
                 dom.classes,
@@ -298,6 +360,8 @@ class GNNBase(NNBase):
             dim=1,
         ).clamp(-1, 1)
 
+    @submodule("dom")
+    def full_x(self, dom, x):
         if self.dom_encoder:
             _add_x = torch.tanh(
                 self.dom_encoder(
@@ -326,63 +390,43 @@ class GNNBase(NNBase):
         x = torch.cat([x, _add_x], dim=1)
         self.last_tensors["conv_x"] = _add_x
         full_x = self.global_dropout(x)
+        return full_x
 
-        # leaves are targetable elements
-        leaf_t_mask = leaves.mask.type(torch.float)
-        # compute a leaf dependent dom feats to indicate relevent nodes
-        # mask based on positional edges
-        spatial_edge_trans = self.dom_transitivity_fn(full_x, dom.spatial_edge_index)
-        assert dom.spatial_edge_index.shape[1] == spatial_edge_trans.shape[0]
-        _spatial_edge_trans = safe_bc_edges(
-            spatial_edge_trans, leaves.br_spatial_edge_index
-        )
-        pos_leaves_att, pos_leaves_ew = self.leaves_pos_conv(
-            torch.cat([leaves.spatial_edge_attr, _spatial_edge_trans], dim=1),
-            leaf_t_mask,
-            leaves.spatial_edge_index,
-        )
-        self.last_tensors["leaves_pos_edge_weights"] = pos_leaves_ew
+    @submodule("dom_leaf")
+    def leaves_att(self, dom, dom_leaf, full_x):
+        leaf_t_mask = dom_leaf.mask.type(torch.float)
+        return self.leaf_prop(full_x, dom, dom_leaf, leaf_t_mask)
 
-        # mask based on dom edges
-        dom_edge_trans = self.dom_transitivity_fn(full_x, dom.dom_edge_index)
-        assert dom.dom_edge_index.shape[1] == dom_edge_trans.shape[0], str(
-            (dom.dom_edge_index.shape, dom_edge_trans.shape)
-        )
-        _dom_edge_trans = safe_bc_edges(dom_edge_trans, leaves.br_dom_edge_index)
-        dom_leaves_att, dom_leaves_ew = self.leaves_dom_conv(
-            torch.cat([leaves.dom_edge_attr, _dom_edge_trans], dim=1),
-            leaf_t_mask,
-            leaves.dom_edge_index,
-        )
-        leaves_att = torch.max(dom_leaves_att, torch.max(pos_leaves_att, leaf_t_mask))
-        self.last_tensors["leaves_dom_edge_weights"] = dom_leaves_ew
-
+    @submodule("dom")
+    def dom_ux_action(self, full_x):
         # infer action from dom nodes
         dom_ux_action = self.dom_ux_action_fn(full_x)
         # for dom action input == paste
-        dom_ux_action = torch.cat(
-            [dom_ux_action[:, 0:], dom_ux_action[:, 1].view(-1, 1)], dim=1
-        )
-        leaf_ux_action = global_max_pool(
-            safe_bc(dom_ux_action, leaves.dom_index) * leaves.mask, leaves.leaf_index
+        return torch.cat([dom_ux_action[:, 0:], dom_ux_action[:, 1].view(-1, 1)], dim=1)
+
+    @submodule("dom_leaf")
+    def leaf_ux_action(self, dom_ux_action, dom_leaf):
+        return global_max_pool(
+            safe_bc(dom_ux_action, dom_leaf.dom_index) * dom_leaf.mask,
+            dom_leaf.leaf_index,
         )
 
+    @submodule("dom_field")
+    def obj_tag_similarities(self, dom, field, dom_field, full_x):
         # compute an objective dependent dom feats
         # start with word embedding similarities
         obj_sim = lambda tag, obj: F.cosine_similarity(
-            safe_bc(dom[tag], objectives_projection.dom_index),
-            safe_bc(objectives[obj], objectives_projection.field_index),
+            safe_bc(dom[tag], dom_field.dom_index),
+            safe_bc(field[obj], dom_field.field_index),
             dim=1,
         ).view(-1, 1)
         dom_desc = self.dom_description_fn(full_x)
-        _dom_desc = safe_bc(dom_desc, objectives_projection.dom_index)
+        _dom_desc = safe_bc(dom_desc, dom_field.dom_index)
         dom_desc_key_sim = F.cosine_similarity(
-            _dom_desc, safe_bc(objectives.key, objectives_projection.field_index), dim=1
+            _dom_desc, safe_bc(field.key, dom_field.field_index), dim=1
         ).view(-1, 1)
         dom_desc_query_sim = F.cosine_similarity(
-            _dom_desc,
-            safe_bc(objectives.query, objectives_projection.field_index),
-            dim=1,
+            _dom_desc, safe_bc(field.query, dom_field.field_index), dim=1
         ).view(-1, 1)
         obj_tag_similarities = torch.relu(
             torch.cat(
@@ -403,128 +447,132 @@ class GNNBase(NNBase):
         )
         if SAFETY:
             assert (
-                global_max_pool(
-                    obj_tag_similarities.max(dim=1)[0], objectives_projection.batch
-                )
+                global_max_pool(obj_tag_similarities.max(dim=1)[0], dom_field.batch)
                 .min()
                 .item()
                 > 0
             )
+        return obj_tag_similarities
 
-        # infer action from query key
-        obj_ux_action = self.objective_ux_action_fn(objectives.key)
-        # infer interested dom attrs
+    @submodule("dom_field")
+    def dom_obj_attr(self, dom_field, full_x):
         # [:,:,0] = goal target. [:,:,2] = goal completion. ; odds are cuttoff
         dom_obj_attr = self.dom_objective_attr_fn(full_x).view(
             full_x.shape[0], self.attr_similarity_size, 2
         )
-        dom_obj_attr__op = safe_bc(dom_obj_attr, objectives_projection.dom_index)
-        dom_obj_int = dom_obj_attr__op[:, :, 0]
+        return safe_bc(dom_obj_attr, dom_field.dom_index)
+
+    @submodule("dom_field")
+    def obj_att_input(self, dom, dom_field, full_x, dom_obj_attr, obj_tag_similarities):
+        # infer interested dom attrs
+        dom_obj_int = dom_obj_attr[:, :, 0]
         # ux action tag sensitivities
         obj_att_input = torch.relu(
             (dom_obj_int * obj_tag_similarities).max(dim=1, keepdim=True).values
         )
 
         if SAFETY:
-            assert (
-                global_max_pool(obj_att_input, objectives_projection.batch).min().item()
-                > 0
-            )
+            assert global_max_pool(obj_att_input, dom_field.batch).min().item() > 0
 
-        _spatial_edge_trans = safe_bc_edges(
-            spatial_edge_trans, objectives_projection.br_spatial_edge_index
-        )
-        pos_objective_att, pos_objective_ew = self.objective_pos_conv(
-            torch.cat(
-                [objectives_projection.spatial_edge_attr, _spatial_edge_trans], dim=1
-            ),
-            obj_att_input,
-            objectives_projection.spatial_edge_index,
-        )
-        _dom_edge_trans = safe_bc_edges(
-            dom_edge_trans, objectives_projection.br_dom_edge_index
-        )
-        dom_objective_att, dom_objective_ew = self.leaves_dom_conv(
-            torch.cat([objectives_projection.dom_edge_attr, _dom_edge_trans], dim=1),
-            obj_att_input,
-            objectives_projection.dom_edge_index,
-        )
-        obj_att_input = torch.max(
-            obj_att_input, torch.max(pos_objective_att, dom_objective_att)
-        )
-        self.last_tensors["dom_objective_ew"] = dom_objective_ew
-        self.last_tensors["pos_objective_ew"] = pos_objective_ew
+        return self.goal_prop(full_x, dom, dom_field, obj_att_input)
 
-        self.last_tensors["dom_obj_attr"] = dom_obj_attr
-        self.last_tensors["obj_att_input"] = obj_att_input
-        self.last_tensors["obj_tag_similarities"] = obj_tag_similarities
+    @submodule("field")
+    def obj_ux_action(self, field):
+        return self.objective_ux_action_fn(field.key)
 
+    @submodule("action")
+    def ux_action_consensus(self, action, obj_ux_action, leaf_ux_action):
         # project into main action space
         _obj_ux_action = safe_bc(
-            obj_ux_action.view(-1, 1), actions.field_ux_action_index
+            obj_ux_action.view(-1, 1), action.field_ux_action_index
         )
 
         _leaf_ux_action = safe_bc(
-            leaf_ux_action.view(-1, 1), actions.leaf_ux_action_index
+            leaf_ux_action.view(-1, 1), action.leaf_ux_action_index
         )
-        _leaf_mask = safe_bc(leaves_att, actions.leaf_dom_index)
+        return _leaf_ux_action * _obj_ux_action
+
+    @submodule("action")
+    def dom_interest(self, action, obj_att_input, leaves_att):
+        # project into main action space
+        _leaf_mask = safe_bc(leaves_att, action.leaf_dom_index)
 
         if SAFETY:
-            assert global_max_pool(_leaf_mask, actions.batch).min().item() > 0
+            assert global_max_pool(_leaf_mask, action.batch).min().item() > 0
 
-        _obj_att_input = safe_bc(obj_att_input, actions.field_dom_index)
-        ux_action_consensus = _leaf_ux_action * _obj_ux_action
-        dom_interest = _leaf_mask * _obj_att_input
-        action_consensus = ux_action_consensus * dom_interest
+        _obj_att_input = safe_bc(obj_att_input, action.field_dom_index)
+        return _leaf_mask * _obj_att_input
 
+    @submodule("action")
+    def action_consensus(self, action, dom_interest, ux_action_consensus):
+        action_consensus = dom_interest * ux_action_consensus
+        if SAFETY:
+            assert global_max_pool(action_consensus, action.batch).min().item() > 0
+        return action_consensus
+
+    @submodule("action")
+    def ac_norm(self, action, action_consensus):
         # norm activity within each goal
-        _ac = global_max_pool(action_consensus, actions.action_index)
-        ac_norm = self.trunk_norm(
-            _ac, global_max_pool(actions.field_index, actions.action_index)
+        _ac = global_max_pool(action_consensus, action.action_index)
+        return self.trunk_norm(
+            _ac, global_max_pool(action.field_index, action.action_index)
         )
-        trunk_norm = self.trunk_norm(action_consensus, actions.field_index)
 
-        self.last_tensors["trunk_norm"] = trunk_norm
-
-        # begin determining active step
-        # compute objective completeness indicators from DOM
-        x_dom_obj_enabled = safe_bc(
-            self.dom_objective_enable_fn(full_x), actions.dom_index
-        )
+    @submodule("dom_field")
+    def value_mask(self, dom, dom_field, full_x, dom_obj_attr, obj_tag_similarities):
         # compute objective completeness with goal word similarities
         # [0 - 1]
-        dom_obj_comp_attr = dom_obj_attr__op[:, :, 1]
-        dom_obj_comp = safe_bc(
-            (dom_obj_comp_attr * obj_tag_similarities).max(dim=1, keepdim=True).values,
-            actions.field_dom_index,
+        dom_obj_comp_attr = dom_obj_attr[:, :, 1]
+        value_mask = (
+            (dom_obj_comp_attr * obj_tag_similarities).max(dim=1, keepdim=True).values
         )
+        return self.value_prop(full_x, dom, dom_field, value_mask)
 
-        self.last_tensors["x_dom_obj_enabled"] = x_dom_obj_enabled
-        self.last_tensors["dom_obj_comp"] = dom_obj_comp
+    @submodule("dom")
+    def enabled_mask(self, full_x):
+        return self.dom_objective_enable_fn(full_x)
 
-        dom_obj_focus = safe_bc(dom.focused, actions.dom_index)
-
+    @submodule("action")
+    def action_status_indicators(
+        self, dom, action, action_consensus, enabled_mask, value_mask, obj_ux_action
+    ):
         action_status_indicators = torch.cat(
             [
-                dom_obj_comp,
-                x_dom_obj_enabled,
-                trunk_norm,
-                safe_bc(obj_ux_action, actions.field_index),
+                safe_bc(value_mask, action.field_dom_index),
+                safe_bc(enabled_mask, action.dom_index),
+                self.trunk_norm(action_consensus, action.field_index),
+                safe_bc(obj_ux_action, action.field_index),
             ],
             dim=1,
         )
-        action_status_indicators = self.status_indicators_fn(action_status_indicators)
+        return self.status_indicators_fn(action_status_indicators)
+
+    @submodule("field")
+    def obj_indicator_order(
+        self,
+        dom,
+        field,
+        dom_field,
+        action,
+        action_consensus,
+        action_status_indicators,
+        full_x,
+        rnn_hxs,
+        masks,
+    ):
+        # begin determining active step
         status_indicators = global_max_pool(
-            action_status_indicators, actions.field_index
+            action_status_indicators, action.field_index
         )
+        dom_obj_focus = safe_bc(dom.focused, action.dom_index)
 
         # pack on order embed and goal focus
         obj_indicator_order = torch.cat(
             [
                 status_indicators,
-                objectives.order,
-                objectives.is_last,
-                global_max_pool(dom_obj_focus * action_consensus, actions.field_index),
+                field.order,
+                field.is_last,
+                global_max_pool(dom_obj_focus * action_consensus, action.field_index),
             ],
             dim=1,
         )
@@ -532,38 +580,50 @@ class GNNBase(NNBase):
         if self.is_recurrent:
             goal_dom_input = torch.cat(
                 [
-                    safe_bc(full_x, objectives_projection.dom_index),
-                    safe_bc(obj_indicator_order, objectives_projection.field_index),
+                    safe_bc(full_x, dom_field.dom_index),
+                    safe_bc(obj_indicator_order, dom_field.field_index),
                 ],
                 dim=1,
             )
             goal_dom_encoded = self.goal_dom_encoder(
-                goal_dom_input, objectives_projection.dom_edge_index
+                goal_dom_input, dom_field.dom_edge_index
             )
-            goal_dom_flat = global_max_pool(
-                goal_dom_encoded, objectives_projection.batch
-            )
+            goal_dom_flat = global_max_pool(goal_dom_encoded, dom_field.batch)
             curr_state, rnn_hxs = self._forward_gru(goal_dom_flat, rnn_hxs, masks)
+            self.last_tensors["rnn_hxs"] = rnn_hxs
             state_indicator_input = torch.cat(
-                [goal_dom_input, safe_bc(curr_state, objectives_projection.batch)],
-                dim=1,
+                [goal_dom_input, safe_bc(curr_state, dom_field.batch)], dim=1
             )
             state_indicator = global_max_pool(
-                self.state_indicator(state_indicator_input),
-                objectives_projection.field_index,
+                self.state_indicator(state_indicator_input), dom_field.field_index
             )
             obj_indicator_order = torch.cat(
                 [state_indicator, obj_indicator_order], dim=1
             )
+        return obj_indicator_order
 
-        obj_ind_seq = pack_as_sequence(obj_indicator_order, objectives.batch)
+    @submodule("field")
+    def obj_active(self, field, obj_indicator_order):
+        obj_ind_seq = pack_as_sequence(obj_indicator_order, field.batch)
         obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
+        self.last_tensors["obj_active_mem"] = obj_active_mem
         # [-1, 1]
-        obj_active = unpack_sequence(obj_active_seq)
-        _obj_active = safe_bc(obj_active, actions.field_index)
+        return unpack_sequence(obj_active_seq)
 
-        self.last_tensors["status_indicators"] = status_indicators
-        self.last_tensors["obj_active"] = obj_active
+    @submodule("action")
+    def trunk(
+        self,
+        action,
+        dom_interest,
+        action_status_indicators,
+        obj_active,
+        leaves_att,
+        obj_att_input,
+        ux_action_consensus,
+    ):
+        _obj_active = safe_bc(obj_active, action.field_index)
+        _leaf_mask = safe_bc(leaves_att, action.leaf_dom_index)
+        _obj_att_input = safe_bc(obj_att_input, action.field_dom_index)
 
         # main action space activity
         # leaf att, goal mask, ux action mask, value mask, enabled mask
@@ -580,31 +640,25 @@ class GNNBase(NNBase):
         )
 
         if SAFETY:
-            assert global_max_pool(ux_action_consensus, actions.batch).min().item() > 0
-            assert global_max_pool(dom_interest, actions.batch).min().item() > 0
-            assert global_max_pool(action_consensus, actions.batch).min().item() > 0
+            assert global_max_pool(ux_action_consensus, action.batch).min().item() > 0
+            assert global_max_pool(dom_interest, action.batch).min().item() > 0
+        return trunk
 
-        self.last_tensors["action_consensus"] = action_consensus
-        self.last_tensors["ux_action_consensus"] = ux_action_consensus
-        self.last_tensors["dom_interest"] = dom_interest
-        # gather the batch ids for the votes
-        action_batch_idx = global_max_pool(
-            actions.batch.view(-1, 1), actions.action_index
-        ).view(-1)
-        action_trunk = global_max_pool(trunk, actions.action_index)
-        action_trunk = torch.cat([ac_norm, action_trunk], dim=1)
-        action_votes = self.actor_gate(action_trunk)
-        action_idx = global_max_pool(actions.action_idx, actions.action_index)
+    def action_trunk(self, action, trunk, ac_norm):
+        action_trunk = global_max_pool(trunk, action.action_index)
+        return torch.cat([ac_norm, action_trunk], dim=1)
 
-        self.last_tensors["leaves_att"] = leaves_att
-        self.last_tensors["obj_ux_action"] = obj_ux_action
-        self.last_tensors["dom_ux_action"] = dom_ux_action
+    def action_votes(self, action_trunk):
+        return self.actor_gate(action_trunk)
 
+    def critic_x(
+        self, field, trunk, obj_active, action_trunk, action_batch_idx, obj_active_mem
+    ):
         # layers * directions, batch, hidden_size
         critic_near_completion = obj_active_mem[-1]
 
         # critic senses goal completion
-        critic_active_steps = torch.tanh(global_add_pool(obj_active, objectives.batch))
+        critic_active_steps = torch.tanh(global_add_pool(obj_active, field.batch))
 
         # critic senses trunk
         x_critic_input = action_trunk
@@ -619,14 +673,36 @@ class GNNBase(NNBase):
         critic_x = torch.cat(
             [critic_mp, critic_ap, critic_active_steps, critic_near_completion], dim=1
         )
-        critic_value = self.critic_gate(critic_x)
+        return critic_x
 
-        self.last_tensors["x"] = x
-        self.last_tensors["trunk"] = trunk
-        self.last_tensors["action_votes"] = action_votes
-        self.last_tensors["critic_x"] = critic_x
+    def action_batch_idx(self, action):
+        return global_max_pool(action.batch.view(-1, 1), action.action_index).view(-1)
 
-        return (critic_value, (action_votes, action_batch_idx), rnn_hxs)
+    def critic_value(self, critic_x):
+        return self.critic_gate(critic_x)
+
+    def forward(self, inputs, rnn_hxs, masks):
+        from torch_geometric.data import Batch, Data
+
+        assert isinstance(inputs, tuple), str(type(inputs))
+        assert all(map(lambda x: isinstance(x, Batch), inputs))
+        dom, objectives, objectives_projection, leaves, actions, history = inputs
+        assert actions.edge_index is not None, str(inputs)
+        self.last_tensors = {
+            "dom": dom,
+            "field": objectives,
+            "dom_leaf": leaves,
+            "dom_field": objectives_projection,
+            "action": actions,
+            "rnn_hxs": rnn_hxs,
+            "masks": masks,
+        }
+
+        return (
+            self.resolve(self.critic_value),
+            (self.resolve(self.action_votes), self.resolve(self.action_batch_idx)),
+            self.last_tensors["rnn_hxs"],
+        )
 
 
 class Encoder(torch.nn.Module):
