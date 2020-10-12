@@ -47,7 +47,7 @@ class GraphPolicy(Policy):
 
 
 class EdgeAttrs(nn.Module):
-    def __init__(self, input_dim, out_dim=1):
+    def __init__(self, input_dim, out_dim):
         super(EdgeAttrs, self).__init__()
         self.edge_fn = nn.Sequential(
             init_ot(nn.Linear(input_dim * 3, input_dim), "relu"),
@@ -160,6 +160,7 @@ class GNNBase(NNBase):
 
         self.dom_encoder = dom_encoder
 
+        edge_attr_size = 4
         action_one_hot_size = 4  # 5 to enable wait
         query_input_dim = 9 + 2 * text_embed_size
         if dom_encoder:
@@ -174,20 +175,24 @@ class GNNBase(NNBase):
             init_xn(nn.Linear(hidden_size, action_one_hot_size - 1), "linear"),
             nn.Softmax(dim=1),
         )
-        self.dom_transitivity_fn = EdgeAttrs(hidden_size)
+        transitivity_size = 4
+        self.dom_transitivity_fn = EdgeAttrs(hidden_size, transitivity_size)
         self.dom_description_fn = nn.Sequential(
             init_xu(nn.Linear(hidden_size, text_embed_size), "tanh"), nn.Tanh()
         )
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 10
         # edge attrs + dom_transitivity_fn
-        self.leaves_pos_conv = EdgeMask(4 + 1, 1)
-        self.leaves_dom_conv = EdgeMask(4 + 1, 1)
+        self.leaves_pos_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
+        self.leaves_dom_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
         # [ goal att, value ]
         self.dom_objective_attr_fn = nn.Sequential(
             init_xn(nn.Linear(hidden_size, 2 * attr_similarity_size), "linear"),
             nn.Softplus(),
         )
+        # edge_attrs + dom_transitivity_fn
+        self.objective_pos_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
+        self.objective_dom_conv = EdgeMask(edge_attr_size + transitivity_size, 1)
         # [ enabled ]
         self.dom_objective_enable_size = 3
         self.dom_objective_enable_fn = nn.Sequential(
@@ -405,6 +410,7 @@ class GNNBase(NNBase):
                 .item()
                 > 0
             )
+
         # infer action from query key
         obj_ux_action = self.objective_ux_action_fn(objectives.key)
         # infer interested dom attrs
@@ -424,6 +430,30 @@ class GNNBase(NNBase):
                 global_max_pool(obj_att_input, objectives_projection.batch).min().item()
                 > 0
             )
+
+        _spatial_edge_trans = safe_bc_edges(
+            spatial_edge_trans, objectives_projection.br_spatial_edge_index
+        )
+        pos_objective_att, pos_objective_ew = self.objective_pos_conv(
+            torch.cat(
+                [objectives_projection.spatial_edge_attr, _spatial_edge_trans], dim=1
+            ),
+            obj_att_input,
+            objectives_projection.spatial_edge_index,
+        )
+        _dom_edge_trans = safe_bc_edges(
+            dom_edge_trans, objectives_projection.br_dom_edge_index
+        )
+        dom_objective_att, dom_objective_ew = self.leaves_dom_conv(
+            torch.cat([objectives_projection.dom_edge_attr, _dom_edge_trans], dim=1),
+            obj_att_input,
+            objectives_projection.dom_edge_index,
+        )
+        obj_att_input = torch.max(
+            obj_att_input, torch.max(pos_objective_att, dom_objective_att)
+        )
+        self.last_tensors["dom_objective_ew"] = dom_objective_ew
+        self.last_tensors["pos_objective_ew"] = pos_objective_ew
 
         self.last_tensors["dom_obj_attr"] = dom_obj_attr
         self.last_tensors["obj_att_input"] = obj_att_input

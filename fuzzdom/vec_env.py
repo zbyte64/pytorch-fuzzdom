@@ -112,6 +112,26 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
         source_domain="dom",
         final_domain="dom_field",
     )
+    fields_projection_data.spatial_edge_attr = fields_projection_data.edge_attr
+    fields_projection_data.dom_edge_attr = dom_data.dom_edge_attr.repeat(
+        len(e_fields.nodes), 1
+    )
+    fields_projection_data.spatial_edge_index = fields_projection_data.edge_index
+    fields_projection_data.dom_edge_index = dom_data.dom_edge_index.repeat(
+        1, len(e_fields.nodes)
+    )
+    broadcast_edges(
+        fields_projection_data,
+        dom_data.spatial_edge_index,
+        len(e_fields.nodes),
+        "br_spatial_edge_index",
+    )
+    broadcast_edges(
+        fields_projection_data,
+        dom_data.dom_edge_index,
+        len(e_fields.nodes),
+        "br_dom_edge_index",
+    )
     leaves = get_dom_leaves(e_dom)
     leaves_data = vectorize_projections(
         {"leaf": list({"dom_idx": i} for i in leaves)},
