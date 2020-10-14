@@ -86,11 +86,18 @@ class ToUndirected:
         return data
 
 
+class DomDirection:
+    def __call__(self, data):
+        direction = data.depth[data.edge_index[0]] > data.depth[data.edge_index[1]]
+        data.edge_attr = direction.type(torch.float32).view(-1, 1)
+        return data
+
+
 SPATIAL_TRANSFORMER = Compose(
     [Delaunay(), ToUndirected(), AddSelfLoops(), Distance(), Spherical(), FixEdgeAttr()]
 )
 
-DOM_TRANSFORMER = Compose([ToUndirected(), Distance(), Spherical(), FixEdgeAttr()])
+DOM_TRANSFORMER = Compose([ToUndirected(), DomDirection(), FixEdgeAttr()])
 
 
 def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):

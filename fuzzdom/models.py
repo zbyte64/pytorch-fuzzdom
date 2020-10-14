@@ -49,12 +49,11 @@ class GraphPolicy(Policy):
 
 
 class DirectionalPropagation(ResolveMixin, nn.Module):
-    def __init__(self, hidden_size, transitivity_size, edge_attr_size, mask_dim, K):
+    def __init__(self, hidden_size, transitivity_size, mask_dim, K):
         super(DirectionalPropagation, self).__init__()
-        edge_dim = transitivity_size + edge_attr_size
         self.dom_transitivity_fn = EdgeAttrs(hidden_size, transitivity_size)
-        self.dom_edge_mask = EdgeMask(edge_dim, mask_dim, K)
-        self.pos_edge_mask = EdgeMask(edge_dim, mask_dim, K)
+        self.dom_edge_mask = EdgeMask(1 + transitivity_size, mask_dim, K)
+        self.pos_edge_mask = EdgeMask(4 + transitivity_size, mask_dim, K)
 
     def spatial_mask(self, x, dom, projection, mask):
         spatial_edge_trans = self.dom_transitivity_fn(x, dom.spatial_edge_index)
@@ -175,7 +174,6 @@ class GNNBase(ResolveMixin, NNBase):
 
         self.dom_encoder = dom_encoder
 
-        edge_attr_size = 4
         action_one_hot_size = 4  # 5 to enable wait
         query_input_dim = 9 + 2 * text_embed_size
         if dom_encoder:
@@ -192,13 +190,13 @@ class GNNBase(ResolveMixin, NNBase):
         )
         transitivity_size = 4
         self.leaf_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, edge_attr_size, mask_dim=1, K=5
+            hidden_size, transitivity_size, mask_dim=1, K=5
         )
         self.goal_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, edge_attr_size, mask_dim=1, K=5
+            hidden_size, transitivity_size, mask_dim=1, K=5
         )
         self.value_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, edge_attr_size, mask_dim=1, K=5
+            hidden_size, transitivity_size, mask_dim=1, K=5
         )
 
         self.dom_description_fn = nn.Sequential(
@@ -214,15 +212,10 @@ class GNNBase(ResolveMixin, NNBase):
         # [ enabled ]
         self.dom_enabled_size = 3
         self.dom_enabled_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, self.dom_enabled_size), "sigmoid"),
-            nn.Sigmoid(),
+            init_xn(nn.Linear(hidden_size, self.dom_enabled_size), "relu"), nn.ReLU(),
         )
         self.enabled_prop = DirectionalPropagation(
-            hidden_size,
-            transitivity_size,
-            edge_attr_size,
-            mask_dim=self.dom_enabled_size,
-            K=5,
+            hidden_size, transitivity_size, mask_dim=self.dom_enabled_size, K=5,
         )
 
         self.objective_ux_action_fn = nn.Sequential(
