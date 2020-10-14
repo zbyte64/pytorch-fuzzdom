@@ -21,6 +21,7 @@ from a2c_ppo_acktr.utils import init
 
 from .distributions import NodeObjective
 from .functions import *
+from .nn import ResolveMixin, EdgeMask, EdgeAttrs
 
 
 class GraphPolicy(Policy):
@@ -47,49 +48,7 @@ class GraphPolicy(Policy):
         return super(GraphPolicy, self).evaluate_actions(inputs, rnn_hxs, masks, action)
 
 
-class EdgeAttrs(nn.Module):
-    def __init__(self, input_dim, out_dim):
-        super(EdgeAttrs, self).__init__()
-        self.edge_fn = nn.Sequential(
-            init_ot(nn.Linear(input_dim * 3, input_dim), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(input_dim, out_dim), "sigmoid"),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x, edge_index):
-        x_src = x[edge_index[0]]
-        x_dst = x[edge_index[1]]
-        _x = torch.cat([x_src, x_dst, x_src - x_dst], dim=1)
-        return self.edge_fn(_x)
-
-
-class EdgeMask(nn.Module):
-    def __init__(self, edge_dim, mask_dim=1, K=5, bias=True):
-        super(EdgeMask, self).__init__()
-        self.alpha = nn.Parameter(torch.tensor(1e-3))
-        self.edge_fn = nn.Sequential(
-            init_xn(nn.Linear(edge_dim, 1), "sigmoid"), nn.Sigmoid()
-        )
-        self.conv = APPNP(K=K, alpha=self.alpha)
-        self.K = K
-        if bias:
-            self.bias = nn.Parameter(torch.ones(mask_dim) * -3)
-        else:
-            sekf.bias = None
-
-    def forward(self, edge_attr, mask, edge_index):
-        edge_weights = self.edge_fn(edge_attr).view(-1)
-        # assert False, str((edge_attr.shape, mask.shape, edge_index.shape))
-        fill = torch.relu(mask)
-        fill = self.conv(fill, edge_index, edge_weights)
-        if self.bias is not None:
-            fill = fill - F.softplus(self.bias)
-        fill = torch.tanh(fill)
-        return fill, edge_weights
-
-
-class DirectionalPropagation(nn.Module):
+class DirectionalPropagation(ResolveMixin, nn.Module):
     def __init__(self, hidden_size, transitivity_size, edge_attr_size, mask_dim, K):
         super(DirectionalPropagation, self).__init__()
         edge_dim = transitivity_size + edge_attr_size
@@ -97,23 +56,42 @@ class DirectionalPropagation(nn.Module):
         self.dom_edge_mask = EdgeMask(edge_dim, mask_dim, K)
         self.pos_edge_mask = EdgeMask(edge_dim, mask_dim, K)
 
-    def forward(self, x, dom, projection, mask):
+    def spatial_mask(self, x, dom, projection, mask):
         spatial_edge_trans = self.dom_transitivity_fn(x, dom.spatial_edge_index)
-        dom_edge_trans = self.dom_transitivity_fn(x, dom.dom_edge_index)
-        _spatial_edge_trans = safe_bc_edges(
-            spatial_edge_trans, projection.br_spatial_edge_index
-        )
+        if projection is not dom:
+            _spatial_edge_trans = safe_bc_edges(
+                spatial_edge_trans, projection.br_spatial_edge_index
+            )
+        else:
+            _spatial_edge_trans = spatial_edge_trans
         pos_mask, pos_mask_ew = self.pos_edge_mask(
             torch.cat([projection.spatial_edge_attr, _spatial_edge_trans], dim=1),
             mask,
             projection.spatial_edge_index,
         )
-        _dom_edge_trans = safe_bc_edges(dom_edge_trans, projection.br_dom_edge_index)
+        self.export_value("spatial_edge_weights", pos_mask_ew)
+        return pos_mask
+
+    def dom_mask(self, x, dom, projection, mask):
+        dom_edge_trans = self.dom_transitivity_fn(x, dom.dom_edge_index)
+        if projection is not dom:
+            _dom_edge_trans = safe_bc_edges(
+                dom_edge_trans, projection.br_dom_edge_index
+            )
+        else:
+            _dom_edge_trans = dom_edge_trans
         dom_mask, dom_mask_ew = self.dom_edge_mask(
             torch.cat([projection.dom_edge_attr, _dom_edge_trans], dim=1),
             mask,
             projection.dom_edge_index,
         )
+        self.export_value("dom_edge_weights", dom_mask_ew)
+        return dom_mask
+
+    def forward(self, x, dom, projection, mask):
+        self.start_resolve({"x": x, "dom": dom, "mask": mask, "projection": projection})
+        pos_mask = self.resolve_value(self.spatial_mask)
+        dom_mask = self.resolve_value(self.dom_mask)
         return torch.max(mask, torch.max(pos_mask, dom_mask))
 
 
@@ -182,7 +160,7 @@ def submodule(target_domain=None):
     return f
 
 
-class GNNBase(NNBase):
+class GNNBase(ResolveMixin, NNBase):
     def __init__(
         self,
         input_dim,
@@ -234,10 +212,17 @@ class GNNBase(NNBase):
             nn.Softplus(),
         )
         # [ enabled ]
-        self.dom_objective_enable_size = 3
-        self.dom_objective_enable_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, self.dom_objective_enable_size), "tanh"),
-            nn.Tanh(),
+        self.dom_enabled_size = 3
+        self.dom_enabled_fn = nn.Sequential(
+            init_xn(nn.Linear(hidden_size, self.dom_enabled_size), "sigmoid"),
+            nn.Sigmoid(),
+        )
+        self.enabled_prop = DirectionalPropagation(
+            hidden_size,
+            transitivity_size,
+            edge_attr_size,
+            mask_dim=self.dom_enabled_size,
+            K=5,
         )
 
         self.objective_ux_action_fn = nn.Sequential(
@@ -251,7 +236,7 @@ class GNNBase(NNBase):
         )
         # enabled, value similarity, ac, ux action
         self.objective_indicator_size = objective_indicator_size = (
-            2 + self.dom_objective_enable_size + action_one_hot_size
+            2 + self.dom_enabled_size + action_one_hot_size
         )
         self.status_indicators_fn = nn.Sequential(
             init_xn(
@@ -312,35 +297,6 @@ class GNNBase(NNBase):
             init_xn(nn.Linear(critic_embed_size, 1), "linear"),
         )
 
-    def resolve(self, func, resolving=None):
-        """
-        Call a method whose arguments are tensors resolved by matching their name to a self method
-        """
-        fname = func.__name__
-        deps = signature(func)
-
-        if fname not in self.last_tensors:
-            # collect dependencies
-            resolving = resolving or {fname}
-            kwargs = {}
-            for param in deps.parameters:
-                if param == "self":
-                    continue
-                if param not in self.last_tensors:
-                    assert (
-                        param not in resolving
-                    ), f"{fname} has circular dependency through {param}"
-                    resolving.add(param)
-                    assert hasattr(self, param), f"{fname} has unmet dependency {param}"
-                    self.last_tensors[param] = self.resolve(
-                        getattr(self, param), resolving
-                    )
-                kwargs[param] = self.last_tensors[param]
-            result = func(**kwargs)
-            assert result is not None, f"Bad return value: {fname}"
-            self.last_tensors[fname] = result
-        return self.last_tensors[fname]
-
     @submodule("dom")
     def x(self, dom):
         return torch.cat(
@@ -388,7 +344,6 @@ class GNNBase(NNBase):
         _add_x = self.global_conv(x, dom.spatial_edge_index)
 
         x = torch.cat([x, _add_x], dim=1)
-        self.last_tensors["conv_x"] = _add_x
         full_x = self.global_dropout(x)
         return full_x
 
@@ -529,8 +484,9 @@ class GNNBase(NNBase):
         return self.value_prop(full_x, dom, dom_field, value_mask)
 
     @submodule("dom")
-    def enabled_mask(self, full_x):
-        return self.dom_objective_enable_fn(full_x)
+    def enabled_mask(self, dom, full_x):
+        mask = self.dom_enabled_fn(full_x)
+        return self.enabled_prop(full_x, dom, dom, mask)
 
     @submodule("action")
     def action_status_indicators(
@@ -590,7 +546,7 @@ class GNNBase(NNBase):
             )
             goal_dom_flat = global_max_pool(goal_dom_encoded, dom_field.batch)
             curr_state, rnn_hxs = self._forward_gru(goal_dom_flat, rnn_hxs, masks)
-            self.last_tensors["rnn_hxs"] = rnn_hxs
+            self.export_value("rnn_hxs", rnn_hxs)
             state_indicator_input = torch.cat(
                 [goal_dom_input, safe_bc(curr_state, dom_field.batch)], dim=1
             )
@@ -606,7 +562,7 @@ class GNNBase(NNBase):
     def obj_active(self, field, obj_indicator_order):
         obj_ind_seq = pack_as_sequence(obj_indicator_order, field.batch)
         obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
-        self.last_tensors["obj_active_mem"] = obj_active_mem
+        self.export_value("obj_active_mem", obj_active_mem)
         # [-1, 1]
         return unpack_sequence(obj_active_seq)
 
@@ -688,20 +644,25 @@ class GNNBase(NNBase):
         assert all(map(lambda x: isinstance(x, Batch), inputs))
         dom, objectives, objectives_projection, leaves, actions, history = inputs
         assert actions.edge_index is not None, str(inputs)
-        self.last_tensors = {
-            "dom": dom,
-            "field": objectives,
-            "dom_leaf": leaves,
-            "dom_field": objectives_projection,
-            "action": actions,
-            "rnn_hxs": rnn_hxs,
-            "masks": masks,
-        }
+        self.start_resolve(
+            {
+                "dom": dom,
+                "field": objectives,
+                "dom_leaf": leaves,
+                "dom_field": objectives_projection,
+                "action": actions,
+                "rnn_hxs": rnn_hxs,
+                "masks": masks,
+            }
+        )
 
         return (
-            self.resolve(self.critic_value),
-            (self.resolve(self.action_votes), self.resolve(self.action_batch_idx)),
-            self.last_tensors["rnn_hxs"],
+            self.resolve_value(self.critic_value),
+            (
+                self.resolve_value(self.action_votes),
+                self.resolve_value(self.action_batch_idx),
+            ),
+            self.resolve_value(lambda rnn_hxs: rnn_hxs),
         )
 
 

@@ -105,6 +105,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
     dom_data.edge_attr = None
     dom_data = SPATIAL_TRANSFORMER(dom_data)
     dom_data.spatial_edge_index = dom_data.edge_index
+    dom_data.spatial_edge_attr = dom_data.edge_attr
 
     fields_projection_data = vectorize_projections(
         {"field": list({"field_idx": i} for i in range(len(e_fields.nodes)))},

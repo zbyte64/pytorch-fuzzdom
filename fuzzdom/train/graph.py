@@ -311,9 +311,7 @@ def main():
             # tensorboard_writer.add_histogram(
             #    "task_ranks", torch.tensor(predictor._difficulty_rank), total_num_steps
             # )
-            for k, t in actor_critic.base.last_tensors.items():
-                if hasattr(t, "cpu"):
-                    tensorboard_writer.add_histogram(k, t, total_num_steps)
+            actor_critic.base.report_values(tensorboard_writer, total_num_steps)
 
             tensorboard_writer.add_histogram("value", next_value, total_num_steps)
 
