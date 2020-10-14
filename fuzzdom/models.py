@@ -460,7 +460,9 @@ class GNNBase(ResolveMixin, NNBase):
 
     @submodule("action")
     def ac_norm(self, action, action_consensus):
-        # norm activity within each goal
+        """
+        scale each action value relative to other action options within the same goal
+        """
         _ac = global_max_pool(action_consensus, action.action_index)
         return self.trunk_norm(
             _ac, global_max_pool(action.field_index, action.action_index)
@@ -483,13 +485,13 @@ class GNNBase(ResolveMixin, NNBase):
 
     @submodule("action")
     def action_status_indicators(
-        self, dom, action, action_consensus, enabled_mask, value_mask, obj_ux_action
+        self, dom, action, ac_norm, enabled_mask, value_mask, obj_ux_action
     ):
         action_status_indicators = torch.cat(
             [
                 safe_bc(value_mask, action.field_dom_index),
                 safe_bc(enabled_mask, action.dom_index),
-                self.trunk_norm(action_consensus, action.field_index),
+                safe_bc(ac_norm, action.action_index),
                 safe_bc(obj_ux_action, action.field_index),
             ],
             dim=1,
