@@ -151,7 +151,7 @@ class FixedActionDecoder(nn.Module):
         return ret.view(batch_size, action_size)
 
 
-def submodule(target_domain=None):
+def domain(target_domain=None):
     def f(func):
         func.__target_domain__ = target_domain
         return func
@@ -210,9 +210,10 @@ class GNNBase(ResolveMixin, NNBase):
             nn.Softplus(),
         )
         # [ enabled ]
-        self.dom_enabled_size = 3
+        self.dom_enabled_size = 1
         self.dom_enabled_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, self.dom_enabled_size), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(hidden_size, self.dom_enabled_size), "sigmoid"),
+            nn.Sigmoid(),
         )
         self.enabled_prop = DirectionalPropagation(
             hidden_size, transitivity_size, mask_dim=self.dom_enabled_size, K=5,
@@ -227,18 +228,11 @@ class GNNBase(ResolveMixin, NNBase):
             # nn.Linear(action_one_hot_size, action_one_hot_size),
             # nn.Softmax(dim=1),
         )
-        # enabled, value similarity, ac, ux action
-        self.objective_indicator_size = objective_indicator_size = (
-            2 + self.dom_enabled_size + action_one_hot_size
+        self.ux_action_needs_value_fn = nn.Sequential(
+            init_xn(nn.Linear(action_one_hot_size, 1), "sigmoid"), nn.Sigmoid(),
         )
-        self.status_indicators_fn = nn.Sequential(
-            init_xn(
-                nn.Linear(objective_indicator_size, objective_indicator_size), "tanh"
-            ),
-            nn.Tanh(),
-        )
-        # order, is last, has focus
-        objective_active_size = objective_indicator_size + 3
+        # has_value, order, is last, has focus, ux action
+        objective_active_size = 4 + action_one_hot_size
         if recurrent:
             # dom + pos + goal indicators
             goal_dom_size = hidden_size + objective_active_size
@@ -254,35 +248,28 @@ class GNNBase(ResolveMixin, NNBase):
             input_size=objective_active_size,
             hidden_size=objective_active_size,
             num_layers=2,
-            # bidirectional=True,
+            bidirectional=True,
         )
-        # consensus, dom interest, leaf att, goal mask, ux action mask, [Goal indicators], [GRU indicators]
-        trunk_size = 5 + objective_active_size + objective_indicator_size
-        # norm consensus
+        self.active_fn = nn.Sequential(
+            init_xn(nn.Linear(objective_active_size * 2, 1), "linear")
+        )
         self.trunk_norm = InstanceNorm(1)
+        trunk_size = 3
         self.actor_gate = nn.Sequential(
-            init_xu(nn.Linear(trunk_size, trunk_size), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(trunk_size, 1), "relu"),
-            nn.ReLU(),
+            init_ones(nn.Linear(trunk_size, 1), "relu"), nn.ReLU(),
         )
 
         critic_embed_size = 16
-        critic_size = trunk_size
+        # ac norm, active, has value
+        critic_size = 3
         self.critic_mp_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_embed_size), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(critic_embed_size, critic_embed_size), "sigmoid"),
-            nn.Sigmoid(),
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU(),
         )
         self.critic_ap_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_embed_size), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(critic_embed_size, critic_embed_size), "sigmoid"),
-            nn.Sigmoid(),
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU(),
         )
         critic_gate_size = (
-            2 * critic_embed_size + 2 * objective_active_size
+            2 * critic_size + 1 * objective_active_size
         )  # active steps, near_completion
         self.critic_gate = nn.Sequential(
             init_xu(nn.Linear(critic_gate_size, critic_embed_size), "relu"),
@@ -290,7 +277,7 @@ class GNNBase(ResolveMixin, NNBase):
             init_xn(nn.Linear(critic_embed_size, 1), "linear"),
         )
 
-    @submodule("dom")
+    @domain("dom")
     def x(self, dom):
         return torch.cat(
             [
@@ -309,7 +296,7 @@ class GNNBase(ResolveMixin, NNBase):
             dim=1,
         ).clamp(-1, 1)
 
-    @submodule("dom")
+    @domain("dom")
     def full_x(self, dom, x):
         if self.dom_encoder:
             _add_x = torch.tanh(
@@ -340,26 +327,26 @@ class GNNBase(ResolveMixin, NNBase):
         full_x = self.global_dropout(x)
         return full_x
 
-    @submodule("dom_leaf")
+    @domain("dom_leaf")
     def leaves_att(self, dom, dom_leaf, full_x):
         leaf_t_mask = dom_leaf.mask.type(torch.float)
         return self.leaf_prop(full_x, dom, dom_leaf, leaf_t_mask)
 
-    @submodule("dom")
+    @domain("dom")
     def dom_ux_action(self, full_x):
         # infer action from dom nodes
         dom_ux_action = self.dom_ux_action_fn(full_x)
         # for dom action input == paste
         return torch.cat([dom_ux_action[:, 0:], dom_ux_action[:, 1].view(-1, 1)], dim=1)
 
-    @submodule("dom_leaf")
+    @domain("dom_leaf")
     def leaf_ux_action(self, dom_ux_action, dom_leaf):
         return global_max_pool(
             safe_bc(dom_ux_action, dom_leaf.dom_index) * dom_leaf.mask,
             dom_leaf.leaf_index,
         )
 
-    @submodule("dom_field")
+    @domain("dom_field")
     def obj_tag_similarities(self, dom, field, dom_field, full_x):
         # compute an objective dependent dom feats
         # start with word embedding similarities
@@ -402,15 +389,20 @@ class GNNBase(ResolveMixin, NNBase):
             )
         return obj_tag_similarities
 
-    @submodule("dom_field")
+    @domain("dom_field")
     def dom_obj_attr(self, dom_field, full_x):
-        # [:,:,0] = goal target. [:,:,2] = goal completion. ; odds are cuttoff
+        """
+        Compute attribute affinity to goal target or completion
+        Returns: [:,:,0] = goal target. [:,:,1] = goal completion.
+        [0,1]
+        """
         dom_obj_attr = self.dom_objective_attr_fn(full_x).view(
             full_x.shape[0], self.attr_similarity_size, 2
         )
+        # dom_obj_attr = F.softmax(dom_obj_attr, dim=2)
         return safe_bc(dom_obj_attr, dom_field.dom_index)
 
-    @submodule("dom_field")
+    @domain("dom_field")
     def obj_att_input(self, dom, dom_field, full_x, dom_obj_attr, obj_tag_similarities):
         # infer interested dom attrs
         dom_obj_int = dom_obj_attr[:, :, 0]
@@ -424,13 +416,12 @@ class GNNBase(ResolveMixin, NNBase):
 
         return self.goal_prop(full_x, dom, dom_field, obj_att_input)
 
-    @submodule("field")
+    @domain("field")
     def obj_ux_action(self, field):
         return self.objective_ux_action_fn(field.key)
 
-    @submodule("action")
+    @domain("action")
     def ux_action_consensus(self, action, obj_ux_action, leaf_ux_action):
-        # project into main action space
         _obj_ux_action = safe_bc(
             obj_ux_action.view(-1, 1), action.field_ux_action_index
         )
@@ -440,81 +431,98 @@ class GNNBase(ResolveMixin, NNBase):
         )
         return _leaf_ux_action * _obj_ux_action
 
-    @submodule("action")
-    def dom_interest(self, action, obj_att_input, leaves_att):
-        # project into main action space
+    @domain("action")
+    def dom_interest(self, action, leaves_att, enabled_mask, ux_action_consensus):
         _leaf_mask = safe_bc(leaves_att, action.leaf_dom_index)
-
+        # enabled mask is converted so that disabled spreads
+        _enabled_mask = safe_bc((1 - enabled_mask), action.dom_index)
         if SAFETY:
             assert global_max_pool(_leaf_mask, action.batch).min().item() > 0
 
-        _obj_att_input = safe_bc(obj_att_input, action.field_dom_index)
-        return _leaf_mask * _obj_att_input
+        return _leaf_mask * ux_action_consensus * _enabled_mask
 
-    @submodule("action")
-    def action_consensus(self, action, dom_interest, ux_action_consensus):
-        action_consensus = dom_interest * ux_action_consensus
+    @domain("action")
+    def action_consensus(self, action, dom_interest, obj_att_input):
+        _obj_att_input = safe_bc(obj_att_input, action.field_dom_index)
+        action_consensus = dom_interest * _obj_att_input
         if SAFETY:
             assert global_max_pool(action_consensus, action.batch).min().item() > 0
         return action_consensus
 
-    @submodule("action")
-    def ac_norm(self, action, action_consensus):
+    @domain("action_index")
+    def ac_value(self, action, ac_norm):
         """
         scale each action value relative to other action options within the same goal
         """
-        _ac = global_max_pool(action_consensus, action.action_index)
-        return self.trunk_norm(
-            _ac, global_max_pool(action.field_index, action.action_index)
-        )
+        return global_max_pool(ac_norm, action.action_index)
 
-    @submodule("dom_field")
+    @domain("action")
+    def ac_norm(self, action, action_consensus):
+        """
+        normalize action_consensus across goals
+        """
+        return torch.relu(self.trunk_norm(action_consensus, action.field_index))
+
+    @domain("action")
+    def dom_interest_norm(self, action, dom_interest, ac_value):
+        _ac_value = safe_bc(ac_value, action.action_index)
+        return dom_interest * _ac_value
+
+    @domain("dom_field")
     def value_mask(self, dom, dom_field, full_x, dom_obj_attr, obj_tag_similarities):
-        # compute objective completeness with goal word similarities
-        # [0 - 1]
+        """
+        compute objective completeness with goal word similarities
+        [0 - 1]
+        """
         dom_obj_comp_attr = dom_obj_attr[:, :, 1]
         value_mask = (
             (dom_obj_comp_attr * obj_tag_similarities).max(dim=1, keepdim=True).values
         )
         return self.value_prop(full_x, dom, dom_field, value_mask)
 
-    @submodule("dom")
+    @domain("dom")
     def enabled_mask(self, dom, full_x):
+        """
+        determine if a node is active/interesting
+        """
         mask = self.dom_enabled_fn(full_x)
         return self.enabled_prop(full_x, dom, dom, mask)
 
-    @submodule("action")
+    @domain("action")
     def action_status_indicators(
-        self, dom, action, ac_norm, enabled_mask, value_mask, obj_ux_action
+        self, dom, action, dom_interest_norm, value_mask, obj_ux_action
     ):
-        action_status_indicators = torch.cat(
-            [
-                safe_bc(value_mask, action.field_dom_index),
-                safe_bc(enabled_mask, action.dom_index),
-                safe_bc(ac_norm, action.action_index),
-                safe_bc(obj_ux_action, action.field_index),
-            ],
-            dim=1,
-        )
-        return self.status_indicators_fn(action_status_indicators)
+        """
+        determine if a node supplies a goal value (or doesn't need to)
+        """
+        _value_mask = safe_bc(value_mask, action.field_dom_index)
+        non_value = self.ux_action_needs_value_fn(obj_ux_action)
+        _non_value = safe_bc(non_value, action.field_index)
+        v = torch.cat([_value_mask, _non_value], dim=1)
+        return v.max(dim=1, keepdim=True).values * dom_interest_norm
 
-    @submodule("field")
+    @domain("field")
     def obj_indicator_order(
         self,
         dom,
         field,
         dom_field,
         action,
-        action_consensus,
+        dom_interest_norm,
         action_status_indicators,
+        obj_ux_action,
         full_x,
         rnn_hxs,
         masks,
     ):
-        # begin determining active step
+        """
+        Input for determining the active step
+        """
+        # has the value been supplied?
         status_indicators = global_max_pool(
             action_status_indicators, action.field_index
         )
+
         dom_obj_focus = safe_bc(dom.focused, action.dom_index)
 
         # pack on order embed and goal focus
@@ -523,7 +531,8 @@ class GNNBase(ResolveMixin, NNBase):
                 status_indicators,
                 field.order,
                 field.is_last,
-                global_max_pool(dom_obj_focus * action_consensus, action.field_index),
+                global_max_pool(dom_obj_focus * dom_interest_norm, action.field_index),
+                obj_ux_action,
             ],
             dim=1,
         )
@@ -553,77 +562,48 @@ class GNNBase(ResolveMixin, NNBase):
             )
         return obj_indicator_order
 
-    @submodule("field")
+    @domain("field")
     def obj_active(self, field, obj_indicator_order):
         obj_ind_seq = pack_as_sequence(obj_indicator_order, field.batch)
         obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
         self.export_value("obj_active_mem", obj_active_mem)
-        # [-1, 1]
-        return unpack_sequence(obj_active_seq)
+        # [0, 1]
+        return softmax(self.active_fn(unpack_sequence(obj_active_seq)), field.batch)
 
-    @submodule("action")
-    def trunk(
-        self,
-        action,
-        dom_interest,
-        action_status_indicators,
-        obj_active,
-        leaves_att,
-        obj_att_input,
-        ux_action_consensus,
+    @domain("action_index")
+    def critic_trunk(
+        self, action, ac_norm, action_status_indicators, obj_active,
     ):
         _obj_active = safe_bc(obj_active, action.field_index)
-        _leaf_mask = safe_bc(leaves_att, action.leaf_dom_index)
-        _obj_att_input = safe_bc(obj_att_input, action.field_dom_index)
 
-        # main action space activity
-        # leaf att, goal mask, ux action mask, value mask, enabled mask
+        trunk = torch.cat([action_status_indicators, _obj_active, ac_norm,], dim=1,)
+        return global_max_pool(trunk, action.action_index)
+
+    @domain("action_index")
+    def action_trunk(self, action, ac_norm, action_status_indicators, obj_active):
+        _obj_active = safe_bc(obj_active, action.field_index)
         trunk = torch.cat(
-            [
-                dom_interest,
-                action_status_indicators,
-                _obj_active,
-                _leaf_mask,
-                _obj_att_input,
-                ux_action_consensus,
-            ],
-            dim=1,
+            [ac_norm, ac_norm - action_status_indicators, _obj_active * ac_norm], dim=1
         )
-
-        if SAFETY:
-            assert global_max_pool(ux_action_consensus, action.batch).min().item() > 0
-            assert global_max_pool(dom_interest, action.batch).min().item() > 0
-        return trunk
-
-    def action_trunk(self, action, trunk, ac_norm):
-        action_trunk = global_max_pool(trunk, action.action_index)
-        return torch.cat([ac_norm, action_trunk], dim=1)
+        return global_max_pool(trunk, action.action_index)
 
     def action_votes(self, action_trunk):
         return self.actor_gate(action_trunk)
 
     def critic_x(
-        self, field, trunk, obj_active, action_trunk, action_batch_idx, obj_active_mem
+        self, field, action, critic_trunk, obj_active, action_batch_idx, obj_active_mem
     ):
         # layers * directions, batch, hidden_size
         critic_near_completion = obj_active_mem[-1]
 
-        # critic senses goal completion
-        critic_active_steps = torch.tanh(global_add_pool(obj_active, field.batch))
-
-        # critic senses trunk
-        x_critic_input = action_trunk
-
-        critic_mp = self.critic_mp_score(x_critic_input)
-        critic_ap = self.critic_ap_score(x_critic_input)
+        critic_mp = self.critic_mp_score(critic_trunk)
+        critic_ap = self.critic_ap_score(critic_trunk)
 
         # max/add objective difficulty in batch
         critic_mp = torch.relu(global_max_pool(critic_mp, action_batch_idx))
         critic_ap = torch.tanh(global_add_pool(critic_ap, action_batch_idx))
 
-        critic_x = torch.cat(
-            [critic_mp, critic_ap, critic_active_steps, critic_near_completion], dim=1
-        )
+        critic_x = torch.cat([critic_mp, critic_ap, critic_near_completion], dim=1)
         return critic_x
 
     def action_batch_idx(self, action):
