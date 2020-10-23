@@ -1,5 +1,5 @@
 #torch
-torch-geometric==1.4.3
+torch-geometric==1.6.1
 #torch-scatter
 #torch-sparse
 #torch-cluster
@@ -13,7 +13,7 @@ bpemb
 git+https://github.com/openai/baselines.git@master#egg=baselines
 linkGrabber
 tensorboardX
-arsenic
+arsenic==19.1
 pytest
 pytest-asyncio
 git+https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail.git@master#egg=pytorch-a2c-ppo-acktr-gail
