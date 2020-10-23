@@ -7,6 +7,11 @@ import json
 import gzip
 import networkx as nx
 from torch_geometric.utils import from_networkx
+from urllib.parse import urlparse
+import asyncio
+import arsenic.errors
+from itertools import groupby
+from collections import defaultdict
 
 from .domx import json_to_graph, miniwob_to_graph
 from .vec_env import encode_dom_graph, encode_fields
@@ -17,6 +22,7 @@ from .state import MiniWoBGraphState, fields_factory
 class DomDataset(Dataset):
     def __init__(self, root, urls, transform=None, pre_transform=None):
         super(DomDataset, self).__init__(root, transform, pre_transform)
+        # TODO group urls by domain, async worker per domain
         self.urls = urls
 
     @property
@@ -30,16 +36,19 @@ class DomDataset(Dataset):
     def __len__(self):
         return len(self.processed_file_names)
 
-    def download(self):
-        import asyncio
+    def download(self, workers=4):
+        d = defaultdict(list)
+        for x, url in zip(map(urlparse, self.urls), self.urls):
+            d[x.netloc].append(url)
 
         loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.async_download())
+        promises = tuple(map(lambda urls: self.async_download(urls), d.values()))
+        return loop.run_until_complete(asyncio.gather(*promises))
 
-    async def async_download(self):
+    async def async_download(self, urls):
         driver = await open_driver()
         self.web_interface = WebInterface(driver=driver)
-        for url in self.urls:
+        for url in urls:
             print(url)
             i = hash(url)
             outpath = osp.join(self.raw_dir, f"{i}.json")
@@ -47,7 +56,12 @@ class DomDataset(Dataset):
                 continue
             if url.startswith("file:/"):
                 assert os.path.exists(url[7:]), url[7:]
-            await driver.get(url)
+            try:
+                await driver.get(url)
+            except (arsenic.errors.ArsenicError,) as e:
+                print(e)
+                asyncio.sleep(1)
+                continue
             await self.web_interface.wait_for_dom()
             await self.web_interface._injection_check()
             # print(self.web_interface.location)
@@ -74,8 +88,9 @@ class DomDataset(Dataset):
             if not len(dom_nx) or not len(dom_nx.edges):
                 print("Empty", raw_path)
                 continue
-            data = encode_dom_graph(dom_nx)
+            data, _max_depth = encode_dom_graph(dom_nx)
             data = from_networkx(data)
+            data.edge_index = data.edge_index.type(torch.long)
             data.x = torch.cat(
                 [
                     data[key]
@@ -94,9 +109,8 @@ class DomDataset(Dataset):
                 ],
                 dim=1,
             )
-            data.test_mask = torch.FloatTensor(data.x.shape[0]).uniform_() > 0.8
-            data.train_mask = ~data.test_mask
-            data.val_mask = torch.FloatTensor(data.x.shape[0]).uniform_() > 0.9
+            data.edge_index[0].max().int() <= data.x.shape[0], "Bad shape"
+            data.edge_index[1].max().int() <= data.x.shape[0], "Bad shape"
 
             if self.pre_filter is not None and not self.pre_filter(data):
                 continue
@@ -278,7 +292,7 @@ if __name__ == "__main__":
     import linkGrabber
     import re
 
-    download = True
+    download = True and False
     paths = []
     if download:
         paths = [
@@ -302,12 +316,22 @@ if __name__ == "__main__":
             # "imgur.com",
             # "www.lowes.com",
             "www.cbssports.com",
-            "www.nfl.com",
+            # "www.nfl.com",
             # "www.expedia.com",
             "www.walmart.com",
             "www.wayfair.com",
             "bing.com",
             # "reddit.com",
+            "codepen.io",
+            "getbootstrap.com",
+            "angular.io",
+            "jquery.com",
+            "reactjs.org",
+            "builderbook.org",
+            "vuejs.org",
+            "vuetifyjs.com",
+            "material-ui.com",
+            "tailwindui.com",
         ]
         for u in initial_domains:
             print(u)
@@ -318,4 +342,5 @@ if __name__ == "__main__":
     d = DomDataset(DATA_DIR + "/dom-dataset", paths)
     if download:
         d.download()
+    print("processing")
     d.process()
