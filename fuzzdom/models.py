@@ -181,11 +181,14 @@ class GNNBase(ResolveMixin, NNBase):
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
         self.action_decoder = FixedActionDecoder()
         self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
-        self.global_dropout = nn.Dropout(p=0.3)
+        self.global_dropout = nn.Dropout(p=0.0)
 
+        # paste  & copy have equal weight
+        dom_ux_action_fn_size = action_one_hot_size - 1
         self.dom_ux_action_fn = nn.Sequential(
-            # paste  & copy have equal weight
-            init_xn(nn.Linear(hidden_size, action_one_hot_size - 1), "linear"),
+            init_xn(nn.Linear(hidden_size, dom_ux_action_fn_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(dom_ux_action_fn_size, dom_ux_action_fn_size), "linear"),
             nn.Softmax(dim=1),
         )
         transitivity_size = 4
@@ -200,23 +203,31 @@ class GNNBase(ResolveMixin, NNBase):
         )
 
         self.dom_description_fn = nn.Sequential(
-            init_xu(nn.Linear(hidden_size, text_embed_size), "tanh"), nn.Tanh()
+            init_xn(nn.Linear(hidden_size, text_embed_size), "relu"),
+            nn.ReLU(),
+            init_xu(nn.Linear(text_embed_size, text_embed_size), "tanh"),
+            nn.Tanh(),
         )
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 10
         # [ goal att, value ]
         self.dom_objective_attr_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, 2 * attr_similarity_size), "linear"),
-            nn.Softplus(),
-        )
-        # [ enabled ]
-        self.dom_enabled_size = 1
-        self.dom_enabled_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, self.dom_enabled_size), "sigmoid"),
+            init_xn(nn.Linear(hidden_size, 2 * attr_similarity_size), "relu"),
+            nn.ReLU(),
+            init_xn(
+                nn.Linear(2 * attr_similarity_size, 2 * attr_similarity_size), "sigmoid"
+            ),
             nn.Sigmoid(),
         )
-        self.enabled_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=self.dom_enabled_size, K=5,
+        # [ enabled ]
+        self.dom_disabled_fn = nn.Sequential(
+            init_xn(nn.Linear(hidden_size, 8), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(8, 1), "sigmoid"),
+            nn.Sigmoid(),
+        )
+        self.dom_disabled_prop = DirectionalPropagation(
+            hidden_size, transitivity_size, mask_dim=1, K=5,
         )
 
         self.objective_ux_action_fn = nn.Sequential(
@@ -230,6 +241,21 @@ class GNNBase(ResolveMixin, NNBase):
         )
         self.ux_action_needs_value_fn = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 1), "sigmoid"), nn.Sigmoid(),
+        )
+        self.dom_needs_value_fn = nn.Sequential(
+            init_xn(nn.Linear(hidden_size, 8), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(8, 1), "sigmoid"),
+            nn.Sigmoid(),
+        )
+        self.dom_disabled_value_fn = nn.Sequential(
+            init_xn(nn.Linear(hidden_size, 8), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(8, 1), "sigmoid"),
+            nn.Sigmoid(),
+        )
+        self.dom_disabled_value_prop = DirectionalPropagation(
+            hidden_size, transitivity_size, mask_dim=1, K=5,
         )
         # has_value, order, is last, has focus, ux action
         objective_active_size = 4 + action_one_hot_size
@@ -321,10 +347,9 @@ class GNNBase(ResolveMixin, NNBase):
             )
             x = torch.cat([x, _add_x], dim=1)
 
-        _add_x = self.global_conv(x, dom.spatial_edge_index)
+        _add_x = self.global_dropout(self.global_conv(x, dom.spatial_edge_index))
 
-        x = torch.cat([x, _add_x], dim=1)
-        full_x = self.global_dropout(x)
+        full_x = torch.cat([x, _add_x], dim=1)
         return full_x
 
     @domain("dom_leaf")
@@ -403,12 +428,16 @@ class GNNBase(ResolveMixin, NNBase):
         return safe_bc(dom_obj_attr, dom_field.dom_index)
 
     @domain("dom_field")
-    def obj_att_input(self, dom, dom_field, full_x, dom_obj_attr, obj_tag_similarities):
-        # infer interested dom attrs
-        dom_obj_int = dom_obj_attr[:, :, 0]
+    def dom_obj_int(self, dom_obj_attr, obj_tag_similarities):
         # ux action tag sensitivities
+        return torch.relu(
+            torch.einsum("bad,ba->bad", dom_obj_attr, obj_tag_similarities)
+        )
+
+    @domain("dom_field")
+    def obj_att_input(self, dom, dom_field, full_x, dom_obj_int):
         obj_att_input = torch.relu(
-            (dom_obj_int * obj_tag_similarities).max(dim=1, keepdim=True).values
+            (dom_obj_int[:, :, 0]).max(dim=1, keepdim=True).values
         )
 
         if SAFETY:
@@ -432,14 +461,13 @@ class GNNBase(ResolveMixin, NNBase):
         return _leaf_ux_action * _obj_ux_action
 
     @domain("action")
-    def dom_interest(self, action, leaves_att, enabled_mask, ux_action_consensus):
+    def dom_interest(self, action, leaves_att, disabled_mask, ux_action_consensus):
         _leaf_mask = safe_bc(leaves_att, action.leaf_dom_index)
-        # enabled mask is converted so that disabled spreads
-        _enabled_mask = safe_bc((1 - enabled_mask), action.dom_index)
+        _disabled_mask = safe_bc(disabled_mask, action.dom_index)
         if SAFETY:
             assert global_max_pool(_leaf_mask, action.batch).min().item() > 0
 
-        return _leaf_mask * ux_action_consensus * _enabled_mask
+        return _leaf_mask * ux_action_consensus * _disabled_mask
 
     @domain("action")
     def action_consensus(self, action, dom_interest, obj_att_input):
@@ -468,25 +496,42 @@ class GNNBase(ResolveMixin, NNBase):
         _ac_value = safe_bc(ac_value, action.action_index)
         return dom_interest * _ac_value
 
+    @domain("dom")
+    def dom_disabled_value_mask(self, dom, full_x):
+        dom_disabled = self.dom_disabled_value_fn(full_x)
+        # invert after propagation
+        return 1 - self.dom_disabled_value_prop(full_x, dom, dom, dom_disabled)
+
     @domain("dom_field")
-    def value_mask(self, dom, dom_field, full_x, dom_obj_attr, obj_tag_similarities):
+    def value_mask(
+        self, dom, dom_field, full_x, dom_obj_int, dom_disabled_value_mask,
+    ):
         """
         compute objective completeness with goal word similarities
         [0 - 1]
         """
-        dom_obj_comp_attr = dom_obj_attr[:, :, 1]
+        obj_value_mask = (dom_obj_int[:, :, 1]).max(dim=1, keepdim=True).values
+        _dom_value_mask = safe_bc(dom_disabled_value_mask, dom_field.dom_index)
+        non_value = self.dom_needs_value_fn(full_x)
+        _non_value = safe_bc(non_value, dom_field.dom_index)
         value_mask = (
-            (dom_obj_comp_attr * obj_tag_similarities).max(dim=1, keepdim=True).values
+            torch.cat([obj_value_mask, _non_value], dim=1)
+            .max(dim=1, keepdim=True)
+            .values
         )
-        return self.value_prop(full_x, dom, dom_field, value_mask)
+        value_mask = (
+            self.value_prop(full_x, dom, dom_field, value_mask) * _dom_value_mask
+        )
+        return value_mask
 
     @domain("dom")
-    def enabled_mask(self, dom, full_x):
+    def disabled_mask(self, dom, full_x):
         """
         determine if a node is active/interesting
         """
-        mask = self.dom_enabled_fn(full_x)
-        return self.enabled_prop(full_x, dom, dom, mask)
+        mask = self.dom_disabled_fn(full_x)
+        # invert after positive propagation
+        return 1 - self.dom_disabled_prop(full_x, dom, dom, mask)
 
     @domain("action")
     def action_status_indicators(
@@ -617,7 +662,7 @@ class GNNBase(ResolveMixin, NNBase):
 
         assert isinstance(inputs, tuple), str(type(inputs))
         assert all(map(lambda x: isinstance(x, Batch), inputs))
-        dom, objectives, objectives_projection, leaves, actions, history = inputs
+        dom, objectives, objectives_projection, leaves, actions, *history = inputs
         assert actions.edge_index is not None, str(inputs)
         self.start_resolve(
             {
@@ -646,12 +691,12 @@ class Encoder(torch.nn.Module):
         super(Encoder, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.conv1 = GCNConv(in_channels, 2 * out_channels)
+        self.conv1 = GCNConv(in_channels, 2 * out_channels, cached=True)
         if model in ["GAE"]:
-            self.conv2 = GCNConv(2 * out_channels, out_channels)
+            self.conv2 = GCNConv(2 * out_channels, out_channels, cached=True)
         elif model in ["VGAE"]:
-            self.conv_mu = GCNConv(2 * out_channels, out_channels)
-            self.conv_logvar = GCNConv(2 * out_channels, out_channels)
+            self.conv_mu = GCNConv(2 * out_channels, out_channels, cached=True)
+            self.conv_logvar = GCNConv(2 * out_channels, out_channels, cached=True)
 
     def forward(self, x, edge_index):
         x = torch.relu(self.conv1(x, edge_index))

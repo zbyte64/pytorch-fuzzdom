@@ -47,10 +47,21 @@ def _miniwob_path(f):
     return p
 
 
+"""
+Notes:
+
+- click-button-sequence requires memory
+"""
+
 MINIWOB_CHALLENGES = _miniwob_path(
     [
         ["click-button", "click-dialog-2", "click-link", "click-tab", "click-widget"],
-        ["choose-list", "click-option", "click-checkboxes", "click-button-sequence"],
+        [
+            "choose-list",
+            "click-option",
+            "click-checkboxes",
+            # "click-button-sequence",
+        ],
         ["enter-text", "enter-text-dynamic"],  # "enter-password"],
         # "click-checkboxes-large"],
         # "navigate-tree"],
@@ -65,6 +76,34 @@ MINIWOB_CHALLENGES = _miniwob_path(
         # ["book-flight-nodelay"],
         # TODO requires hover action:
         # ["click-menu", "click-menu-2"],
+    ]
+)
+
+
+MINIWOB_CHALLENGES = _miniwob_path(
+    [
+        [
+            "click-button",
+            "click-dialog-2",
+            "click-link",
+            "click-tab",
+            "click-widget",
+            "choose-list",
+            "click-option",
+            "click-checkboxes",
+        ],
+        [
+            "enter-text",
+            "enter-text-dynamic",
+            "login-user",
+            "login-user-popup",
+            "multi-layouts",
+            "multi-orderings",
+        ],
+        ["login-user", "login-user-popup", "multi-layouts", "multi-orderings",],
+        ["multi-layouts", "multi-orderings"],
+        ["choose-list", "click-option", "click-checkboxes",],
+        ["click-option", "click-checkboxes"],
     ]
 )
 

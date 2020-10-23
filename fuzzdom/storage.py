@@ -10,10 +10,11 @@ class StorageReceipt:
     Convert graphs into integers for easier integration
     """
 
-    def __init__(self, device="cpu"):
+    def __init__(self, device="cpu", storage_device="cpu"):
         self._counter = 0
         self._data = {}
         self.device = device
+        self.storage_device = storage_device
 
     def __call__(self, state):
         return self.issue_receipt(state)
@@ -33,7 +34,7 @@ class StorageReceipt:
         assert len(state[2])
         receipt = self._counter
         self._counter += 1
-        self._data[receipt] = state
+        self._data[receipt] = tuple(map(lambda x: x.to(self.storage_device), state))
         return torch.tensor([receipt])
 
     def redeem(self, receipts):

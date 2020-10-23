@@ -13,8 +13,10 @@ def prod(iterable):
     return reduce(operator.mul, iterable, 1)
 
 
-def from_networkx(g, **indexes):
-    data = SubData(_from_networkx(g), **indexes)
+def from_networkx(g, **kwargs):
+    d = _from_networkx(g)
+    d.edge_index = d.edge_index.type(torch.long)
+    data = SubData(d, **kwargs)
     data.num_nodes = g.number_of_nodes()
     return data
 

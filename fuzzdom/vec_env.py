@@ -100,8 +100,9 @@ SPATIAL_TRANSFORMER = Compose(
 DOM_TRANSFORMER = Compose([ToUndirected(), DomDirection(), FixEdgeAttr()])
 
 
-def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
+def state_to_vector(graph_state: MiniWoBGraphState):
     e_dom, max_depth = encode_dom_graph(graph_state.dom_graph)
+    assert len(e_dom), str(graph_state.dom_graph)
     e_fields = encode_fields(graph_state.fields)
 
     dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
@@ -182,24 +183,12 @@ def state_to_vector(graph_state: MiniWoBGraphState, prior_actions: dict):
         ],
     )
 
-    e_history = encode_prior_actions(e_dom, prior_actions, graph_state.fields)
-    history_data = from_networkx(
-        e_history,
-        ux_action_index=4,
-        dom_index=dom_data.num_nodes,
-        field_index=fields_data.num_nodes,
-    )
-    # because history is usually empty
-    history_data.num_nodes = len(e_history)
-    assert leaves_data.num_nodes
-
     return (
         dom_data,
         fields_data,
         fields_projection_data,
         leaves_data,
         actions_data,
-        history_data,
     )
 
 
@@ -226,33 +215,12 @@ def encode_fields(fields):
     return o
 
 
-def encode_prior_actions(dom_graph: nx.DiGraph, prior_actions: [], fields):
-    history = nx.DiGraph()
-    field_keys = list(fields.keys)
-    for revision, (action_idx, dom_idx, field_idx) in enumerate(prior_actions):
-        action = ["click", "paste_field", "copy", "paste", "sleep"][action_idx]
-        field_key = field_keys[field_idx]
-        history.add_node(
-            revision,
-            dom_idx=dom_idx,
-            dom_index=dom_idx,
-            field_idx=field_idx,
-            field_index=field_idx,
-            action_idx=action_idx,
-            action_one_hot=one_hot(action_idx, 5),
-            ux_action_index=action_idx,
-            revision=revision,
-            action=action,
-        )
-    return history
-
-
 def get_dom_leaves(source: nx.DiGraph):
     # 1 out connection because self connected
     return list(filter(lambda n: source.out_degree(n) == 1, source.nodes))
 
 
-RADIO_VALUES = {"true": 1.0, "on": 1.0, "false": -1.0, "off": -1.0}
+RADIO_VALUES = {True: 1.0, False: -1.0}
 
 
 def encode_dom_graph(g: nx.DiGraph, encode_with=None):
@@ -269,7 +237,6 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
         encode_with = {
             "text": short_embed,
             "value": short_embed,
-            "radio_value": tuplize(lambda x: RADIO_VALUES.get(x, 0.0)),
             "tag": short_embed,
             "classes": short_embed,
             "rx": tuplize(lambda x: minmax_scale(x, -max_rx, max_rx)),
@@ -288,6 +255,7 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
             encoded_data[key] = f(node_data.get(key))
         encoded_data["index"] = i
         encoded_data["dom_idx"] = (i,)
+        encoded_data["radio_value"] = (RADIO_VALUES.get(node_data.get("value"), 0.0),)
         encoded_data["depth"] = ((d.get(node, 0) + 1) / max_depth,)
         encoded_data["pos"] = (
             encoded_data["rx"][0] + encoded_data["width"][0] / 2,
@@ -329,14 +297,7 @@ class GraphGymWrapper(gym.Wrapper):
 
     def action(self, action):
         assert len(action) == 1, str(action)
-        (
-            dom,
-            objectives,
-            obj_projection,
-            leaves,
-            actions,
-            history,
-        ) = self.last_observation
+        (dom, objectives, obj_projection, leaves, actions) = self.last_observation
         combination_idx = action[0]
         # ux_action, field, leaf
         selected_combo = actions.combinations[combination_idx]
@@ -349,22 +310,19 @@ class GraphGymWrapper(gym.Wrapper):
         dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]
         field_value = list(self.last_state.fields.values)[field_idx]
         assert isinstance(field_value, str), str(self.last_state.fields)
-        self.prior_actions.append((action_id, dom_idx, field_idx))
         return (action_id, dom_ref, field_value)
 
     def observation(self, obs: MiniWoBGraphState):
         assert isinstance(obs, MiniWoBGraphState), str(type(obs))
         self.last_state = obs
-        obs = state_to_vector(obs, self.prior_actions)
+        obs = state_to_vector(obs)
         self.last_observation = obs
         return obs
 
     async def exec_observation(self, obs, executor):
         assert isinstance(obs, MiniWoBGraphState), str(type(obs))
         loop = asyncio.get_event_loop()
-        v_obs = await loop.run_in_executor(
-            executor, state_to_vector, obs, self.prior_actions
-        )
+        v_obs = await loop.run_in_executor(executor, state_to_vector, obs)
         self.last_observation = v_obs
         self.last_state = obs
         return v_obs

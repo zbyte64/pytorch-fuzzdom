@@ -40,17 +40,21 @@ class ResolveMixin:
                     ), f"{fname} has circular dependency through {param}"
                     resolving.add(param)
                     assert hasattr(self, param), f"{fname} has unmet dependency {param}"
-                    self._last_values[param] = self.resolve_value(
-                        getattr(self, param), resolving
-                    )
-                kwargs[param] = self._last_values[param]
+                    value = self.resolve_value(getattr(self, param), resolving)
+                else:
+                    value = self._last_values[param]
+                kwargs[param] = value
             result = func(**kwargs)
             assert result is not None, f"Bad return value: {fname}"
+            if fname == "_lambda_":
+                return result
             self._last_values[fname] = result
         return self._last_values[fname]
 
     def report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):
         for k, t in self._last_values.items():
+            if k.startswith("_"):
+                continue
             if hasattr(t, "cpu"):
                 writer.add_histogram(f"{prefix}{k}", t, step_number)
         for k, mod in self.named_children():
