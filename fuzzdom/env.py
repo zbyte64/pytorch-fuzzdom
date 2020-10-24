@@ -216,10 +216,10 @@ class MiniWoBGraphEnvironment(gym.Env):
     def __init__(
         self,
         levels,
+        web_interface=None,
         base_url=os.getenv("CRAWL_PATH"),
         wait_ms=0.0,
         level_tracker=None,
-        web_interface=None,
     ):
         super(MiniWoBGraphEnvironment, self).__init__()
         self.wait_ms = wait_ms
@@ -422,8 +422,8 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
     env.set_task("Click on the Movies tab", [("click", "Movies")])
     """
 
-    def __init__(self, driver, wait_ms=0.0):
-        web_interface = WebInterface(driver=driver)
+    def __init__(self, driver=None, wait_ms=0.0):
+        web_interface = WebInterface(driver=driver) if driver else None
         super(CustomTaskEnvironment, self).__init__(
             levels=None,
             base_url="",
@@ -438,6 +438,9 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
         self.utterance = utterance
 
     async def async_reset(self):
+        if not self._web:
+            self._web = ManagedWebInterface(proxy=os.getenv("PROXY_HOST"))
+            await self.open()
         await self.begin_task()
         return self.state
 
@@ -472,3 +475,38 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
 
     async def _injection_check(self):
         await self._web._injection_check()
+
+
+class CrawlTaskEnvironment(CustomTaskEnvironment):
+    """
+    Modified Graph Environment for crawling a site
+
+    env = CrawlTaskEnvironment(driver, start_url)
+    """
+
+    def __init__(self, start_url, wait_ms=0.0, valid_url=lambda href: True):
+        super().__init__(wait_ms=wait_ms)
+        self.start_url = start_url
+        self.valid_url = valid_url
+        self.set_task({"click": ""}, "Explore")
+
+    async def begin_task(self, seed=None):
+        await self.driver.get(self.start_url)
+        await self.wait_for_dom()
+        await self._web._injection_check()
+        self.start_time = time.time()
+        self.state = await self.get_wob_state()
+
+    async def get_metadata(self) -> dict:
+        l = await self._web.location
+        reward = 0.0
+        reason = None
+        done = not self.valid_url(l["href"])
+        print(l, done)
+        return {
+            "done": done,
+            "env_reward": reward,
+            "raw_reward": reward,
+            "reason": reason,
+            "href": l["href"],
+        }

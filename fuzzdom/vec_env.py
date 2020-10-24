@@ -348,11 +348,11 @@ class GraphGymWrapper(gym.Wrapper):
         return await self.exec_observation(obs, executor)
 
 
-def make_vec_envs(envs, receipts):
+def make_vec_envs(envs, receipts, inner=lambda x: x):
     from .asyncio_vector_env import AsyncioVectorEnv
 
     envs = [
-        ReceiptsGymWrapper(GraphGymWrapper(env), receipt_factory=receipts)
+        ReceiptsGymWrapper(inner(GraphGymWrapper(env)), receipt_factory=receipts)
         for env in envs
     ]
     vec_env = AsyncioVectorEnv(envs)

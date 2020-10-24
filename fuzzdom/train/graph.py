@@ -9,14 +9,16 @@ import gym
 import numpy as np
 import torch
 import torch_geometric
+from torch_geometric.nn import GAE
 
 from tensorboardX import SummaryWriter
 from a2c_ppo_acktr import algo, utils
 from fuzzdom.arguments import get_args
 from a2c_ppo_acktr.storage import RolloutStorage
 
-from fuzzdom.env import MiniWoBGraphEnvironment
-from fuzzdom.models import GNNBase, GraphPolicy
+from fuzzdom.factory_resolver import FactoryResolver
+from fuzzdom.env import MiniWoBGraphEnvironment, ManagedWebInterface
+from fuzzdom.models import GNNBase, GraphPolicy, Encoder
 from fuzzdom.storage import StorageReceipt
 from fuzzdom.vec_env import make_vec_envs
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
@@ -25,142 +27,190 @@ from fuzzdom import gail
 from fuzzdom.replay import ReplayRepository
 
 
-def main():
-    args = get_args()
+class RunTime:
+    def __init__(self):
+        self.text_embed_size = 25
+        self.encoder_size = 25
 
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    def args(self):
+        return get_args()
 
-    if args.cuda and torch.cuda.is_available() and args.cuda_deterministic:
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+    def envs(self, args, receipts):
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
-    log_dir = os.path.expanduser(args.log_dir)
-    eval_log_dir = log_dir + "_eval"
-    utils.cleanup_log_dir(log_dir)
-    utils.cleanup_log_dir(eval_log_dir)
+        log_dir = os.path.expanduser(args.log_dir)
+        eval_log_dir = log_dir + "_eval"
+        utils.cleanup_log_dir(log_dir)
+        utils.cleanup_log_dir(eval_log_dir)
 
-    torch.set_num_threads(1)
-    device = torch.device("cuda:0" if args.cuda else "cpu")
-    receipts = StorageReceipt(device)
-    make_env = lambda tasks: MiniWoBGraphEnvironment(
-        base_url=os.environ.get("BASE_URL", f"file://{MINIWOB_HTML}/"),
-        levels=tasks,
-        level_tracker=LevelTracker(tasks),
-        wait_ms=500,
-    )
-    print("device", device, torch.cuda.is_available())
+        torch.set_num_threads(1)
+        make_env = lambda tasks: MiniWoBGraphEnvironment(
+            base_url=os.environ.get("BASE_URL", f"file://{MINIWOB_HTML}/"),
+            levels=tasks,
+            level_tracker=LevelTracker(tasks),
+            wait_ms=500,
+            web_interface=ManagedWebInterface(proxy=os.getenv("PROXY_HOST")),
+        )
 
-    task = args.env_name
-    if task == "levels":
-        tasks = MINIWOB_CHALLENGES
-    else:
-        tasks = [[task]]
-    print("Selected tasks:", tasks)
-    NUM_ACTIONS = 1
-    envs = make_vec_envs(
-        [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts
-    )
-
-    if args.load_model:
-        print("Loadng previous model:", args.load_model)
-        actor_critic = torch.load(args.load_model)
-        actor_critic.receipts = receipts
-    else:
-
-        if os.path.exists("./datadir/autoencoder.pt"):
-            dom_autoencoder = torch.load("./datadir/autoencoder.pt")
-            dom_encoder = dom_autoencoder.encoder
-            for param in dom_encoder.parameters():
-                param.requires_grad = False
+        task = args.env_name
+        if task == "levels":
+            tasks = MINIWOB_CHALLENGES
         else:
-            print("No dom encoder")
-            dom_encoder = None
-        actor_critic = GraphPolicy(
-            envs.observation_space.shape,
-            gym.spaces.Discrete(NUM_ACTIONS),  # envs.action_space,
-            base=GNNBase,
-            base_kwargs={
-                "dom_encoder": dom_encoder,
-                "recurrent": args.recurrent_policy,
-            },
-            receipts=receipts,
+            tasks = [[task]]
+        print("Selected tasks:", tasks)
+        envs = make_vec_envs(
+            [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)],
+            receipts,
         )
-    actor_critic.to(device)
-    actor_critic.train()
-    if actor_critic.base.dom_encoder:
-        actor_critic.base.dom_encoder.eval()
+        return envs
 
-    if args.algo == "a2c":
-        agent = algo.A2C_ACKTR(
-            actor_critic,
-            args.value_loss_coef,
-            args.entropy_coef,
-            lr=args.lr,
-            eps=args.eps,
-            alpha=args.alpha,
-            max_grad_norm=args.max_grad_norm,
+    def receipts(self, device):
+        return StorageReceipt(device)
+
+    def device(self, args):
+        if args.cuda and torch.cuda.is_available() and args.cuda_deterministic:
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+        return torch.device("cuda:0" if args.cuda else "cpu")
+
+    def autoencoder(self, args):
+        return None
+        if os.path.exists("./datadir/autoencoder.pt"):
+            return torch.load("./datadir/autoencoder.pt")
+        in_size = self.text_embed_size * 4 + 9
+        out_size = self.encoder_size
+        print(GAE, Encoder, in_size, out_size)
+        encoder = Encoder("GAE", in_size, out_size)
+        print(encoder)
+        foo = GAE(encoder)
+        print(foo)
+        return foo
+
+    def dom_encoder(self, autoencoder):
+        return autoencoder.encoder if autoencoder else None
+
+    def actor_critic(self, envs, args, device, receipts, dom_encoder):
+        if args.load_model:
+            print("Loadng previous model:", args.load_model)
+            actor_critic = torch.load(args.load_model)
+            actor_critic.receipts = receipts
+        else:
+            if dom_encoder:
+                for param in dom_encoder.parameters():
+                    param.requires_grad = False
+            else:
+                print("No dom encoder")
+                dom_encoder = None
+            actor_critic = GraphPolicy(
+                envs.observation_space.shape,
+                gym.spaces.Discrete(1),  # envs.action_space,
+                base=GNNBase,
+                base_kwargs={
+                    "dom_encoder": dom_encoder,
+                    "recurrent": args.recurrent_policy,
+                },
+                receipts=receipts,
+            )
+        actor_critic.to(device)
+        actor_critic.train()
+        if actor_critic.base.dom_encoder:
+            actor_critic.base.dom_encoder.eval()
+        return actor_critic
+
+    def agent(self, args, actor_critic):
+        if args.algo == "a2c":
+            agent = algo.A2C_ACKTR(
+                actor_critic,
+                args.value_loss_coef,
+                args.entropy_coef,
+                lr=args.lr,
+                eps=args.eps,
+                alpha=args.alpha,
+                max_grad_norm=args.max_grad_norm,
+            )
+        elif args.algo == "ppo":
+            agent = algo.PPO(
+                actor_critic,
+                args.clip_param,
+                args.ppo_epoch,
+                args.num_mini_batch,
+                args.value_loss_coef,
+                args.entropy_coef,
+                lr=args.lr,
+                eps=args.eps,
+                max_grad_norm=args.max_grad_norm,
+            )
+        elif args.algo == "acktr":
+            agent = algo.A2C_ACKTR(
+                actor_critic, args.value_loss_coef, args.entropy_coef, acktr=True
+            )
+        return agent
+
+    def tensorboard_writer(self):
+        ts_str = datetime.datetime.fromtimestamp(time.time()).strftime(
+            "%Y-%m-%d_%H-%M-%S"
         )
-    elif args.algo == "ppo":
-        agent = algo.PPO(
-            actor_critic,
-            args.clip_param,
-            args.ppo_epoch,
-            args.num_mini_batch,
-            args.value_loss_coef,
-            args.entropy_coef,
-            lr=args.lr,
-            eps=args.eps,
-            max_grad_norm=args.max_grad_norm,
-        )
-    elif args.algo == "acktr":
-        agent = algo.A2C_ACKTR(
-            actor_critic, args.value_loss_coef, args.entropy_coef, acktr=True
+        return SummaryWriter(log_dir=os.path.join("/tmp/log", ts_str))
+
+    def rollouts(self, args, envs, actor_critic):
+        return RolloutStorage(
+            args.num_steps,
+            args.num_processes,
+            (1,),  # envs.observation_space.shape,
+            envs.action_space,
+            actor_critic.recurrent_hidden_state_size,
         )
 
-    if args.gail:
-        assert len(envs.observation_space.shape) == 1
-        discr = gail.Discriminator(envs.observation_space.shape[0], 100, device)
+    def model_path(self, args):
+        if args.save_dir != "" and args.save_interval:
+            save_path = os.path.join(args.save_dir, args.algo)
+            try:
+                os.makedirs(save_path)
+            except OSError:
+                pass
 
-        rr = ReplayRepository("/code/miniwob-plusplus-demos/*turk/*")
-        ds = rr.get_dataset()
-        print("GAIL Replay Dataset", ds)
-        gail_train_loader = torch_geometric.data.DataLoader(
-            ds, batch_size=args.gail_batch_size, shuffle=True, drop_last=True
-        )
+            return os.path.join(save_path, args.env_name + ".pt")
 
-    ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
-    tensorboard_writer = SummaryWriter(log_dir=os.path.join("/tmp/log", ts_str))
+    def num_updates(self, args):
+        return int(args.num_env_steps) // args.num_steps // args.num_processes
 
-    rollouts = RolloutStorage(
-        args.num_steps,
-        args.num_processes,
-        (1,),  # envs.observation_space.shape,
-        envs.action_space,
-        actor_critic.recurrent_hidden_state_size,
-    )
+    def __call__(self):
+        resolv = FactoryResolver(self)
+        print("Initializing...")
+        resolv.update(resolv(self.start))
+        num_updates = resolv["num_updates"]
+        args = resolv["args"]
+        print("Iterations:", num_updates, args.num_steps)
+        last_action_time = time.time()
 
-    if args.save_dir != "" and args.save_interval:
-        save_path = os.path.join(args.save_dir, args.algo)
-        try:
-            os.makedirs(save_path)
-        except OSError:
-            pass
+        for j in range(num_updates):
+            resolv["j"] = j
+            resolv["last_action_time"] = last_action_time
+            resolv.update(resolv(self.run_episode))
+            last_action_time = time.time()
+            resolv.update(reslov(self.optimize))
+            resolv(self.episode_tick)
 
-        model_path = os.path.join(save_path, args.env_name + ".pt")
+    def start(self, envs, rollouts, device):
+        obs = envs.reset()
+        rollouts.obs[0].copy_(torch.tensor(obs))
+        rollouts.to(device)
+        start = time.time()
+        return {"start": start, "obs": obs}
 
-    obs = envs.reset()
-    rollouts.obs[0].copy_(torch.tensor(obs))
-    rollouts.to(device)
-
-    # tensorboard_writer.add_graph(
-    #    actor_critic.base, (receipts.redeem(torch.tensor(obs)), None, None)
-    # )
-
-    start = time.time()
-    num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
-    print("Iterations:", num_updates, args.num_steps)
-    for j in range(num_updates):
+    def run_episode(
+        self,
+        args,
+        envs,
+        rollouts,
+        actor_critic,
+        agent,
+        j,
+        num_updates,
+        last_action_time,
+        obs,
+    ):
         episode_rewards = deque(maxlen=args.num_steps * args.num_processes)
         if j and last_action_time + 5 < time.time():
             # task likely timed out
@@ -196,7 +246,6 @@ def main():
                 )
 
             # Obser reward and next obs
-            last_action_time = time.time()
             obs, reward, done, infos = envs.step(action)
 
             for e, i in enumerate(infos):
@@ -225,32 +274,15 @@ def main():
                 bad_masks,
             )
 
+        return {"obs": obs, "episode_rewards": episode_rewards}
+
+    def optimize(self, args, actor_critic, agent, rollouts):
         with torch.no_grad():
             next_value = actor_critic.get_value(
                 rollouts.obs[-1],
                 rollouts.recurrent_hidden_states[-1],
                 rollouts.masks[-1],
             ).detach()
-
-        if args.gail:
-            # if j >= 10:
-            #    envs.venv.eval()
-
-            gail_epoch = args.gail_epoch
-            if j < 10:
-                gail_epoch = 100  # Warm up
-            for _ in range(gail_epoch):
-                obsfilt = lambda x, update: x  # utils.get_vec_normalize(envs)._obfilt
-                gl = discr.update(gail_train_loader, rollouts, obsfilt)
-            print("Gail loss:", gl)
-
-            for step in range(args.num_steps):
-                rollouts.rewards[step] = discr.predict_reward(
-                    receipts.redeem(rollouts.obs[step]),
-                    rollouts.actions[step],
-                    args.gamma,
-                    rollouts.masks[step],
-                )
 
         rollouts.compute_returns(
             next_value,
@@ -259,11 +291,31 @@ def main():
             args.gae_lambda,
             args.use_proper_time_limits,
         )
-
         value_loss, action_loss, dist_entropy = agent.update(rollouts)
+        return {
+            "value_loss": value_loss,
+            "action_loss": action_loss,
+            "dist_entropy": dist_entropy,
+        }
+
+    def episode_tick(
+        self,
+        args,
+        j,
+        num_updates,
+        start,
+        episode_rewards,
+        actor_critic,
+        tensorboard_writer,
+        receipts,
+        rollouts,
+        resolver,
+    ):
+        # put last observation first and clear
         obs_shape = rollouts.obs.size()[2:]
         obs = rollouts.obs[:-1].view(-1, *obs_shape)
         obs = obs[torch.randint(0, obs.size(0), (1, 32))]
+        resolver["obs"] = obs
 
         rollouts.after_update()
 
@@ -308,52 +360,16 @@ def main():
 
             pprint(LevelTracker.global_scoreboard)
 
-            # tensorboard_writer.add_histogram(
-            #    "task_ranks", torch.tensor(predictor._difficulty_rank), total_num_steps
-            # )
             actor_critic.base.report_values(tensorboard_writer, total_num_steps)
-
-            tensorboard_writer.add_histogram("value", next_value, total_num_steps)
-
-            tensorboard_writer.add_scalar(
-                "mean_reward", np.mean(episode_rewards), total_num_steps
-            )
-            tensorboard_writer.add_scalar(
-                "median_reward", np.median(episode_rewards), total_num_steps
-            )
-            tensorboard_writer.add_scalar(
-                "min_reward", np.min(episode_rewards), total_num_steps
-            )
-            tensorboard_writer.add_scalar(
-                "max_reward", np.max(episode_rewards), total_num_steps
-            )
-            tensorboard_writer.add_scalar("dist_entropy", dist_entropy, total_num_steps)
-            # critic loss
-            tensorboard_writer.add_scalar("value_loss", value_loss, total_num_steps)
-            # actor loss
-            tensorboard_writer.add_scalar("action_loss", action_loss, total_num_steps)
-
-        if (
-            args.eval_interval is not None
-            and len(episode_rewards) > 1
-            and j % args.eval_interval == 0
-        ):
-            ob_rms = utils.get_vec_normalize(envs).ob_rms
-            evaluate(
-                actor_critic,
-                ob_rms,
-                args.env_name,
-                args.seed,
-                args.num_processes,
-                eval_log_dir,
-                device,
-            )
+            resolver.report_values(tensorboard_writer, total_num_steps)
 
 
 if __name__ == "__main__":
     from pprint import pprint
 
+    runtime = RunTime()
+
     try:
-        main()
+        runtime()
     finally:
         pprint(LevelTracker.global_scoreboard)

@@ -323,14 +323,18 @@ class GNNBase(ResolveMixin, NNBase):
         ).clamp(-1, 1)
 
     @domain("dom")
-    def full_x(self, dom, x):
-        if self.dom_encoder:
-            _add_x = torch.tanh(
+    def encoded_x(self, dom):
+        if not self.dom_encoder:
+            return None
+        print(dom.dom_edge_index.max().item(), dom.text.shape)
+        with torch.no_grad():
+            return torch.tanh(
                 self.dom_encoder(
                     torch.cat(
                         [
                             dom.text,
                             dom.value,
+                            dom.radio_value,
                             dom.tag,
                             dom.classes,
                             dom.rx,
@@ -339,13 +343,19 @@ class GNNBase(ResolveMixin, NNBase):
                             dom.height,
                             dom.top,
                             dom.left,
+                            dom.focused,
+                            dom.depth,
                         ],
                         dim=1,
                     ),
                     dom.dom_edge_index,
                 )
             )
-            x = torch.cat([x, _add_x], dim=1)
+
+    @domain("dom")
+    def full_x(self, dom, x, encoded_x):
+        if encoded_x is not None:
+            x = torch.cat([x, encoded_x], dim=1)
 
         _add_x = self.global_dropout(self.global_conv(x, dom.spatial_edge_index))
 
@@ -686,17 +696,60 @@ class GNNBase(ResolveMixin, NNBase):
         )
 
 
-class Encoder(torch.nn.Module):
+class Instructor(GNNBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.objective_fn = Encoder("GAE", self.hidden_size, self.text_embed_size)
+
+    def field(self, dom, _field, full_x):
+        values = self.objective_fn(full_x, dom.dom_edge_index)
+        print(dom.batch.max().item())
+        print(dom.batch.shape, values.shape, full_x.shape)
+        _field.query = global_mean_pool(values, dom.batch)
+        return _field
+
+    def forward(self, inputs, rnn_hxs, masks):
+        from torch_geometric.data import Batch, Data
+
+        assert isinstance(inputs, tuple), str(type(inputs))
+        assert all(map(lambda x: isinstance(x, Batch), inputs))
+        dom, objectives, objectives_projection, leaves, actions = inputs
+        assert actions.edge_index is not None, str(inputs)
+        self.start_resolve(
+            {
+                "dom": dom,
+                "_field": objectives,
+                "dom_leaf": leaves,
+                "dom_field": objectives_projection,
+                "action": actions,
+                "rnn_hxs": rnn_hxs,
+                "masks": masks,
+            }
+        )
+
+        return (
+            self.resolve_value(self.critic_value),
+            (
+                self.resolve_value(self.action_votes),
+                self.resolve_value(self.action_batch_idx),
+            ),
+            self.resolve_value(lambda rnn_hxs: rnn_hxs),
+        )
+
+
+class Encoder(nn.Module):
     def __init__(self, model, in_channels, out_channels):
-        super(Encoder, self).__init__()
+        print(1)
+        super().__init__()
+        print(2)
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.conv1 = GCNConv(in_channels, 2 * out_channels, cached=True)
+        self.conv1 = GCNConv(in_channels, 2 * out_channels)
         if model in ["GAE"]:
-            self.conv2 = GCNConv(2 * out_channels, out_channels, cached=True)
+            self.conv2 = GCNConv(2 * out_channels, out_channels)
         elif model in ["VGAE"]:
-            self.conv_mu = GCNConv(2 * out_channels, out_channels, cached=True)
-            self.conv_logvar = GCNConv(2 * out_channels, out_channels, cached=True)
+            self.conv_mu = GCNConv(2 * out_channels, out_channels)
+            self.conv_logvar = GCNConv(2 * out_channels, out_channels)
 
     def forward(self, x, edge_index):
         x = torch.relu(self.conv1(x, edge_index))

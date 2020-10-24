@@ -1,5 +1,5 @@
 #torch
-torch-geometric==1.6.1
+torch-geometric==1.4.3
 #torch-scatter
 #torch-sparse
 #torch-cluster
