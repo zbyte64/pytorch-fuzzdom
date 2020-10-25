@@ -293,6 +293,7 @@ class MiniWoBGraphEnvironment(gym.Env):
     async def async_reset(self) -> MiniWoBGraphState:
         if not self._web:
             self._web = ManagedWebInterface(proxy=os.getenv("PROXY_HOST"))
+        if not self.driver:
             await self.open()
         await self.select_level_lock
         self.level_tracker.select_level()
@@ -502,7 +503,6 @@ class CrawlTaskEnvironment(CustomTaskEnvironment):
         reward = 0.0
         reason = None
         done = not self.valid_url(l["href"])
-        print(l, done)
         return {
             "done": done,
             "env_reward": reward,

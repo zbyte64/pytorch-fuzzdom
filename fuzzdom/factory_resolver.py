@@ -17,12 +17,10 @@ class FactoryResolver(dict):
         if key in self:
             return super().__getitem__(key)
         assert key not in self._resolving
-        print("Resolving", key)
         self._resolving.add(key)
         value = self(getattr(self.resolves, key))
         self[key] = value
         self._resolving.remove(key)
-        print("Resolved", key)
         return value
 
     def report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):

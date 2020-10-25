@@ -326,7 +326,6 @@ class GNNBase(ResolveMixin, NNBase):
     def encoded_x(self, dom):
         if not self.dom_encoder:
             return None
-        print(dom.dom_edge_index.max().item(), dom.text.shape)
         with torch.no_grad():
             return torch.tanh(
                 self.dom_encoder(
@@ -703,8 +702,6 @@ class Instructor(GNNBase):
 
     def field(self, dom, _field, full_x):
         values = self.objective_fn(full_x, dom.dom_edge_index)
-        print(dom.batch.max().item())
-        print(dom.batch.shape, values.shape, full_x.shape)
         _field.query = global_mean_pool(values, dom.batch)
         return _field
 
@@ -739,9 +736,7 @@ class Instructor(GNNBase):
 
 class Encoder(nn.Module):
     def __init__(self, model, in_channels, out_channels):
-        print(1)
         super().__init__()
-        print(2)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.conv1 = GCNConv(in_channels, 2 * out_channels)

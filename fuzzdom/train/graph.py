@@ -75,17 +75,11 @@ class RunTime:
         return torch.device("cuda:0" if args.cuda else "cpu")
 
     def autoencoder(self, args):
-        return None
         if os.path.exists("./datadir/autoencoder.pt"):
             return torch.load("./datadir/autoencoder.pt")
         in_size = self.text_embed_size * 4 + 9
         out_size = self.encoder_size
-        print(GAE, Encoder, in_size, out_size)
-        encoder = Encoder("GAE", in_size, out_size)
-        print(encoder)
-        foo = GAE(encoder)
-        print(foo)
-        return foo
+        return GAE(Encoder("GAE", in_size, out_size))
 
     def dom_encoder(self, autoencoder):
         return autoencoder.encoder if autoencoder else None
@@ -189,7 +183,7 @@ class RunTime:
             resolv["last_action_time"] = last_action_time
             resolv.update(resolv(self.run_episode))
             last_action_time = time.time()
-            resolv.update(reslov(self.optimize))
+            resolv.update(resolv(self.optimize))
             resolv(self.episode_tick)
 
     def start(self, envs, rollouts, device):
@@ -333,7 +327,7 @@ class RunTime:
             except OSError:
                 pass
 
-            model_path = os.path.join(save_path, args.env_name + ".pt")
+            model_path = os.path.join(save_path, "agent.pt")
             torch.save(actor_critic, model_path)
             print("Saved model:", model_path)
 

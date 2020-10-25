@@ -41,11 +41,11 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
         return global_mean_pool(self.rdn_guesser(x, dom.dom_edge_index), dom.batch)
 
     def actual(self, dom, x):
-        with torh.no_grad():
+        with torch.no_grad():
             return global_mean_pool(self.rdn_target(x, dom.dom_edge_index), dom.batch)
 
     def score(self, guess, actual):
-        return F.pairwise_distance(actual, guess)
+        return torch.mean(F.pairwise_distance(actual, guess))
 
 
 class RDNScorerGymWrapper(gym.Wrapper):

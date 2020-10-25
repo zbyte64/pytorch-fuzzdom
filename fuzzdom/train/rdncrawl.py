@@ -6,11 +6,15 @@ from fuzzdom.models import GraphPolicy, Instructor
 from fuzzdom.env import CrawlTaskEnvironment, open_driver
 from .graph import RunTime as BaseRunTime
 from fuzzdom.rdn import make_rdn_vec_envs, RDNScorer
+from torch_geometric.data import Data
+from torch_geometric.utils import train_test_split_edges
 
 
 class RunTime(BaseRunTime):
-    def rdn_scorer(self):
-        return RDNScorer()
+    def rdn_scorer(self, device):
+        in_size = self.text_embed_size * 4 + 9
+        out_size = self.encoder_size
+        return RDNScorer(in_size, out_size).to(device)
 
     def envs(self, args, receipts, rdn_scorer):
         torch.manual_seed(args.seed)
@@ -91,17 +95,21 @@ class RunTime(BaseRunTime):
         )
         value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
-        all_doms = map(lambda x: x[0], receipts[rollouts.obs])
+        all_doms = receipts.redeem(rollouts.obs)[0]
         all_doms.edge_index = all_doms.dom_edge_index
 
         # train autoencoder
         autoencoder.train()
         autoencoder_optimizer.zero_grad()
-        data = train_test_split_edges(all_doms)
-        x = rdn_scorer.x(all_doms)
-        z = autoencoder.encode(x, data.train_pos_edge_index)
-        autoencoder_loss = autoencoder.recon_loss(z, data.train_pos_edge_index)
-        autoencoder_loss.backward()
+        for i in rollouts.obs.flatten().tolist():
+            data = receipts[i][0]
+            del data.batch
+            data.edge_index = data.dom_edge_index
+            data = train_test_split_edges(data)
+            x = rdn_scorer.x(data)
+            z = autoencoder.encode(x, data.train_pos_edge_index)
+            autoencoder_loss = autoencoder.recon_loss(z, data.train_pos_edge_index)
+            autoencoder_loss.backward()
         autoencoder_optimizer.step()
 
         # train rdn_scorer
