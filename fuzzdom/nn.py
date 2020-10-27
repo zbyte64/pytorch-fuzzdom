@@ -26,12 +26,6 @@ class ResolveMixin:
             self._last_values[key] = val
         return val
 
-    def report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):
-        self._last_values.report_values(writer, step_number, prefix)
-        for k, t in self.namedmodules():
-            if hasattr(t, "report_values"):
-                t.report_values(writer, step_number, f"{prefix}{k}_")
-
 
 class EdgeAttrs(nn.Module):
     """

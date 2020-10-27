@@ -13,7 +13,7 @@ bpemb
 git+https://github.com/openai/baselines.git@master#egg=baselines
 linkGrabber
 tensorboardX
-arsenic==19.1
+arsenic==20.9
 pytest
 pytest-asyncio
 git+https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail.git@master#egg=pytorch-a2c-ppo-acktr-gail

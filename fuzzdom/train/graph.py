@@ -331,30 +331,44 @@ class RunTime:
             torch.save(actor_critic, model_path)
             print("Saved model:", model_path)
 
-        if j % args.log_interval == 0 and len(episode_rewards) > 1:
+        if j % args.log_interval == 0:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
-            end = time.time()
-            print(
-                "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n".format(
-                    j,
-                    total_num_steps,
-                    int(total_num_steps / (end - start)),
-                    len(episode_rewards),
-                    np.mean(episode_rewards),
-                    np.median(episode_rewards),
-                    np.min(episode_rewards),
-                    np.max(episode_rewards),
-                    # dist_entropy,
-                    # value_loss,
-                    # action_loss,
+            if len(episode_rewards) > 1:
+                end = time.time()
+
+                print(
+                    "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n".format(
+                        j,
+                        total_num_steps,
+                        int(total_num_steps / (end - start)),
+                        len(episode_rewards),
+                        np.mean(episode_rewards),
+                        np.median(episode_rewards),
+                        np.min(episode_rewards),
+                        np.max(episode_rewards),
+                        # dist_entropy,
+                        # value_loss,
+                        # action_loss,
+                    )
                 )
-            )
+            else:
+                print(
+                    "Updates {j}, value loss {value_loss}, action loss {action_loss}".format(
+                        j=j,
+                        value_loss=resolver["value_loss"],
+                        action_loss=resolver["action_loss"],
+                    )
+                )
 
-            from pprint import pprint
+            if hasattr(LevelTracker, "global_scoreboard") and len(episode_rewards) > 1:
+                from pprint import pprint
 
-            pprint(LevelTracker.global_scoreboard)
+                pprint(LevelTracker.global_scoreboard)
 
-            actor_critic.base.report_values(tensorboard_writer, total_num_steps)
+            if hasattr(actor_critic.base, "_last_values"):
+                actor_critic.base._last_values.report_values(
+                    tensorboard_writer, total_num_steps
+                )
             resolver.report_values(tensorboard_writer, total_num_steps)
 
 

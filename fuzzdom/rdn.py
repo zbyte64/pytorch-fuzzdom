@@ -62,8 +62,11 @@ class RDNScorerGymWrapper(gym.Wrapper):
         return observation, reward, done, info
 
 
-def make_rdn_vec_envs(envs, receipts, rdn_scorer):
+def make_rdn_vec_envs(envs, receipts, rdn_scorer, filter_leaves=None):
 
     return make_vec_envs(
-        envs, receipts, inner=lambda env: RDNScorerGymWrapper(env, rdn_scorer)
+        envs,
+        receipts,
+        inner=lambda env: RDNScorerGymWrapper(env, rdn_scorer),
+        filter_leaves=filter_leaves,
     )

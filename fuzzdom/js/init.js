@@ -1,8 +1,3 @@
-document.onmousemove = function(e) {
-  window.clientX = e.clientX;
-  window.clientY = e.clientY;
-};
-
 var IGNORE_TAGS = { SCRIPT: 1, STYLE: 1, META: 1, NOSCRIPT: 1 };
 function loop(node, p) {
   // return visible nodes
@@ -59,12 +54,25 @@ function loop(node, p) {
   return node_def;
 }
 
-window.core = Object.assign({}, window.core, {
+window.core = {
   elementClick: function(element) {
+    if (typeof element === "string") {
+      element = document.querySelector(element);
+    }
     return element && element.click && (element.click() || true);
   },
   getDOMInfo: function() {
     window.core.previousDOMInfo = loop(document.body, "html");
     return window.core.previousDOMInfo;
+  },
+  recordedErrors: [],
+  getErrors: function() {
+    ret = window.core.recordedErrors;
+    window.core.recordedErrors = []
+    return ret;
   }
+};
+
+window.addEventListener('error', function(event) {
+  window.core.recordedErrors.push(event);
 });

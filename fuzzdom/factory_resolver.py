@@ -1,3 +1,4 @@
+import torch
 from inspect import signature
 from tensorboardX import SummaryWriter
 
@@ -25,12 +26,18 @@ class FactoryResolver(dict):
 
     def report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):
         for k, t in self.items():
-            if k.startswith("_"):
+            if k.startswith("_") or isinstance(t, FactoryResolver):
                 continue
-            if hasattr(t, "cpu"):
-                writer.add_histogram(f"{prefix}{k}", t, step_number)
-            if hasattr(t, "report_values"):
-                t.report_values(writer, step_number, f"{prefix}{k}_")
+            if isinstance(t, torch.Tensor):
+                if not len(t.shape):
+                    writer.add_scalar(f"{prefix}{k}", t, step_number)
+                else:
+                    writer.add_histogram(f"{prefix}{k}", t, step_number)
+            elif isinstance(t, (int, float)):
+                writer.add_scalar(f"{prefix}{k}", t, step_number)
+            # ??
+            # if hasattr(t, "report_values"):
+            #    t.report_values(writer, step_number, f"{prefix}{k}_")
 
     def __call__(self, func):
         """

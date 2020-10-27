@@ -20,6 +20,7 @@ from arsenic import (
     stop_session,
     actions,
 )
+from arsenic.errors import ArsenicError
 import asyncio
 
 from miniwob.reward import get_original_reward, get_raw_reward
@@ -62,24 +63,24 @@ async def open_driver(proxy=None):
             "--disable-browser-side-navigation",
         ]
     }
+    capabilities = {"browserName": "chrome"}
     if proxy and False:
-        # TODO arsenic proxy?
-        prox = Proxy()
-        prox.proxy_type = ProxyType.MANUAL
-        prox.http_proxy = proxy
-        prox.socks_proxy = proxy
-        prox.ssl_proxy = proxy
-
-        prox.add_to_capabilities(capabilities)
+        capabilities["proxy"] = {
+            "proxyType": "manual",
+            "httpProxy": proxy,
+            "ftpProxy": proxy,
+            "sslProxy": proxy,
+            "socksProxy": proxy,
+        }
 
     if "SELENIUM_URL" in os.environ:
         driver = await start_session(
             services.Remote(os.getenv("SELENIUM_URL")),
-            browsers.Chrome(chromeOptions=chromeOptions),
+            browsers.Browser(**capabilities),
         )
     else:
         driver = await start_session(
-            services.Chromedriver(), browsers.Chrome(chromeOptions=chromeOptions)
+            services.Chromedriver(), browsers.Browser(**capabilities),
         )
     return driver
 
@@ -268,6 +269,9 @@ class MiniWoBGraphEnvironment(gym.Env):
         location = await self._web.location
         assert location["protocol"] != "chrome-error:"
 
+    async def get_js_errors(self):
+        return await self.run_script("return core.getErrors();")
+
     async def refresh_state(self):
         # updates with new state with refetched dom and image
         await self.wait_for_dom()
@@ -278,6 +282,10 @@ class MiniWoBGraphEnvironment(gym.Env):
             await self.wob_dom(),
             None,  # await self._web.get_img(),
         )
+        js_errors = await self.get_js_errors()
+        if js_errors:
+            print("JS errors:")
+            print(js_errors)
 
     def set_state(self, state):
         assert state
@@ -313,6 +321,7 @@ class MiniWoBGraphEnvironment(gym.Env):
         assert isinstance(value, str), str(value)
         assert ref in self.state.dom_graph, str(ref)
         f = self._actions[action_id]
+        # print("#", action_id, ref, value)
 
         start_time = time.time()
         waitable = f(ref, value)
@@ -349,7 +358,6 @@ class MiniWoBGraphEnvironment(gym.Env):
             wait_time = 0  # max(self.wait_ms / 1000 - time.time() - start_time, 0)
             if wait_time:
                 await asyncio.sleep(wait_time)
-
         metadata["elapsed"] = max(0.0, time.time() - self.start_time)
         return self.state, r, done, metadata
 
@@ -357,8 +365,6 @@ class MiniWoBGraphEnvironment(gym.Env):
         await self._web.open()
 
     async def close(self):
-        if hasattr(self, "level_tracker"):
-            print("Level scoreboard", self.level_tracker.ranked_levels)
         await self._web.close()
 
     def get_action_meanings(self):
@@ -441,8 +447,18 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
     async def async_reset(self):
         if not self._web:
             self._web = ManagedWebInterface(proxy=os.getenv("PROXY_HOST"))
+        if not self.driver:
             await self.open()
-        await self.begin_task()
+        try:
+            await self.begin_task()
+        except ArsenicError as error:
+            print("Error while beginning task")
+            print(error)
+            await self.close()
+            # TODO random time interval
+            await asyncio.sleep(0.1)
+            await self.open()
+            await self.begin_task()
         return self.state
 
     async def begin_task(self, seed=None):
@@ -461,7 +477,8 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
 
     async def wob_dom(self) -> nx.DiGraph:
         dom_info = await self.run_script("return core.getDOMInfo();")
-        return json_to_graph(dom_info)
+        ret = json_to_graph(dom_info)
+        return ret
 
     async def get_metadata(self) -> dict:
         reward = 0.0
@@ -495,6 +512,7 @@ class CrawlTaskEnvironment(CustomTaskEnvironment):
         await self.driver.get(self.start_url)
         await self.wait_for_dom()
         await self._web._injection_check()
+        await self.wait_for_dom()
         self.start_time = time.time()
         self.state = await self.get_wob_state()
 
@@ -510,3 +528,19 @@ class CrawlTaskEnvironment(CustomTaskEnvironment):
             "reason": reason,
             "href": l["href"],
         }
+
+    async def async_reset(self):
+        if not self._web:
+            self._web = ManagedWebInterface(proxy=os.getenv("PROXY_HOST"))
+        while True:
+            try:
+                if not self.driver:
+                    await self.open()
+                await self.begin_task()
+            except ArsenicError as error:
+                print("Error while beginning task")
+                print(error)
+                await self.close()
+                await asyncio.sleep(random.random() * 8)
+            else:
+                return self.state

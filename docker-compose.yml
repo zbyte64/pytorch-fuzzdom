@@ -7,10 +7,9 @@ services:
     ipc: "host"
     environment:
       SELENIUM_URL: http://selenium:4444/wd/hub
-      PROXY_HOST: http://squidproxy:3128/
+      PROXY_HOST: squidproxy:3128
     links:
       - selenium
-      - testsite
       - squidproxy
     volumes:
       - ./fuzzdom:/code/fuzzdom
@@ -21,28 +20,37 @@ services:
       - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob
   selenium:
     image: selenium/standalone-chrome
-    links:
-      - testsite
-      - squidproxy
     volumes:
       - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob:ro
       - ./fuzzdom:/code/fuzzom
+      - /dev/shm:/dev/shm
     ports:
       - 4444:4444
+    links:
+      - squidproxy
+    environment:
+      proxy_type: manual
+      http_proxy: http://squidproxy:3128
+      ssl_proxy: http://squidproxy:3128
+      socks_proxy: http://squidproxy:3128
+      ftp_proxy: http://squidproxy:3128
+      JAVA_OPTS: -Dwebdriver.chrome.whitelistedIps=
+      SE_OPTS: -debug
+      #START_XVFB: "false"
+      #SE_OPTS: --headless --disable-gpu --no-sandbox --disable-infobars --disable-dev-shm-usage --disable-browser-side-navigation
+  squidproxy:
+    image: sameersbn/squid:3.5.27-2
+    restart: always
+    volumes:
+      - /srv/docker/squid/cache:/var/spool/squid
+      - ./squid.conf:/etc/squid/squid.conf
+    ports:
+      - 3128:3128
   testsite:
     image: nginx
     volumes:
       - ./fuzzdom/testsite:/usr/share/nginx/html
     ports:
       - 8080:80
-  squidproxy:
-    image: sameersbn/squid:3.5.27-2
-    restart: always
-    links:
-      - testsite
-    volumes:
-      - /srv/docker/squid/cache:/var/spool/squid
-    ports:
-      - 3128:3128
 volumes:
   miniwob-volume:
