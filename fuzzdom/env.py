@@ -541,6 +541,6 @@ class CrawlTaskEnvironment(CustomTaskEnvironment):
                 print("Error while beginning task")
                 print(error)
                 await self.close()
-                await asyncio.sleep(random.random() * 8)
+                await asyncio.sleep(random.random())
             else:
                 return self.state

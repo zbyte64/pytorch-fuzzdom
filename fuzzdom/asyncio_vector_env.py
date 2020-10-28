@@ -99,7 +99,7 @@ class AsyncioVectorEnv(VectorEnv):
     """
 
     def __init__(
-        self, envs, observation_space=None, action_space=None, copy=True, timeout=60.0
+        self, envs, observation_space=None, action_space=None, copy=True, timeout=30.0
     ):
         self.envs = envs
         self.copy = copy

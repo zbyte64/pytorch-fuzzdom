@@ -10,7 +10,7 @@ from .graph import RunTime as BaseRunTime
 from fuzzdom.rdn import make_rdn_vec_envs, RDNScorer
 from fuzzdom.factory_resolver import FactoryResolver
 from torch_geometric.data import Data
-from torch_geometric.utils import train_test_split_edges
+from torch_geometric.utils import train_test_split_edges, remove_self_loops
 
 
 class ModelBasedLeafFilter:
@@ -18,12 +18,15 @@ class ModelBasedLeafFilter:
         self.actor_critic = actor_critic.to("cpu")
         self.k = k
 
-    def __call__(self, leaves, dom, **kwargs):
+    def __call__(self, leaves, dom, field, dom_field, **kwargs):
         if len(leaves) <= self.k:
             return leaves
-        fr = FactoryResolver(self.actor_critic.base, dom=dom)
+        fr = FactoryResolver(
+            self.actor_critic.base, dom=dom, _field=field, dom_field=dom_field
+        )
         with torch.no_grad():
-            disabled_mask = fr(self.actor_critic.base.disabled_mask).flatten()
+            # TODO: use dom interest?
+            disabled_mask = 1 - fr(self.actor_critic.base.disabled_mask).flatten()
             d = torch.ones(disabled_mask.shape[0], dtype=torch.long)
             d[torch.tensor(leaves)] = 0
             d = 1 - d
@@ -156,21 +159,14 @@ class RunTime(BaseRunTime):
                 del data.batch
                 data.edge_index = data.dom_edge_index
                 # skip empty/small edges
-                if not data.edge_index.shape[1] < 5:
+                check, _ = remove_self_loops(data.edge_index)
+                if check.shape[1] < 5:
                     continue
-                try:
-                    # data = train_test_split_edges(data)
-                    pass
-                except Exception as error:
-                    print(error)
-                    print(data.dom_edge_index.shape)
-                    continue
-                # !!woah there cowboy
-                # no validation?
-                data.train_pos_edge_index = data.edge_index
+                # no validation ?
+                # data = train_test_split_edges(data)
                 x = rdn_scorer.x(data)
-                z = autoencoder.encode(x, data.train_pos_edge_index)
-                autoencoder_loss = autoencoder.recon_loss(z, data.train_pos_edge_index)
+                z = autoencoder.encode(x, data.edge_index)
+                autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
                 autoencoder_loss.backward()
             autoencoder_optimizer.step()
 

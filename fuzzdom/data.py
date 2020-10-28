@@ -113,9 +113,11 @@ def vectorize_projections(
     ]
     data.update(
         {
-            "index": torch.zeros((final_size,), dtype=torch.int64),
-            final_domain_key: torch.zeros((final_size,), dtype=torch.int64),
-            source_domain_key: torch.zeros((final_size,), dtype=torch.int64),
+            "index": torch.arange(0, final_size),
+            final_domain_key: torch.arange(0, len(combinations)).repeat_interleave(
+                num_nodes
+            ),
+            source_domain_key: source.index.repeat(len(combinations)),
         }
     )
     data.update(
@@ -144,14 +146,9 @@ def vectorize_projections(
     for k, p in enumerate(combinations):
         # value w/ enum: [ (0, x0), (1, x1) ]
         # p: [(proj_index_0, proj_value_0), ...]
-        k_edge_index = t_edge_index + k * num_nodes
-        edges.append(k_edge_index)
         for u in range(num_nodes):
             index += 1
             node_index = source.index[u]
-            data["index"][index] = index
-            data[final_domain_key][index] = k
-            data[source_domain_key][index] = node_index
 
             for keys, (proj_index, proj_value), p_size in zip(
                 sp_keys, p, map(len, projections.values())
@@ -167,7 +164,9 @@ def vectorize_projections(
                     + data[v.to_domain.field][index]
                 )
 
-    data["edge_index"] = torch.cat(edges, dim=1)
+    data["edge_index"] = t_edge_index.repeat(1, len(combinations)) + torch.arange(
+        0, final_size, num_nodes
+    ).repeat(2, 1).repeat_interleave(t_edge_index.shape[1], dim=1)
     if source.edge_attr is not None:
         data["edge_attr"] = source.edge_attr.repeat(len(combinations), 1)
 
