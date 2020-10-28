@@ -19,7 +19,14 @@ class FactoryResolver(dict):
             return super().__getitem__(key)
         assert key not in self._resolving
         self._resolving.add(key)
-        value = self(getattr(self.resolves, key))
+        if isinstance(self.resolves, dict):
+            f_or_value = self.resolves[key]
+        else:
+            f_or_value = getattr(self.resolves, key)
+        if callable(f_or_value):
+            value = self(f_or_value)
+        else:
+            value = f_or_value
         self[key] = value
         self._resolving.remove(key)
         return value
