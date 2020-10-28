@@ -14,15 +14,18 @@ class FactoryResolver(dict):
         self.resolves = cls
         self._resolving = set()
 
+    def get_resolves_attr(self, key):
+        if isinstance(self.resolves, dict):
+            return self.resolves[key]
+        else:
+            return getattr(self.resolves, key)
+
     def __getitem__(self, key):
         if key in self:
             return super().__getitem__(key)
         assert key not in self._resolving
         self._resolving.add(key)
-        if isinstance(self.resolves, dict):
-            f_or_value = self.resolves[key]
-        else:
-            f_or_value = getattr(self.resolves, key)
+        f_or_value = self.get_resolves_attr(key)
         if callable(f_or_value):
             value = self(f_or_value)
         else:
@@ -50,6 +53,8 @@ class FactoryResolver(dict):
         """
         Call a method whose arguments are tensors resolved by matching their name to a self method
         """
+        if isinstance(func, str):
+            func = self.get_resolves_attr(func)
         deps = signature(func)
 
         # collect dependencies

@@ -100,7 +100,7 @@ def optimize(
     filter_leaves,
     device,
 ):
-    print("optimizing")
+    print("optimizing rdn")
     with torch.no_grad():
         next_value = actor_critic.get_value(
             rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1],

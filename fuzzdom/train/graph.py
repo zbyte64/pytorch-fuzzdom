@@ -349,7 +349,7 @@ def episode_tick(
 def train(modules=locals()):
     resolv = FactoryResolver(modules)
     print("Initializing...")
-    resolv.update(resolv(start))
+    resolv.update(resolv("start"))
     num_updates = resolv["num_updates"]
     args = resolv["args"]
     print("Iterations:", num_updates, args.num_steps)
@@ -358,10 +358,10 @@ def train(modules=locals()):
     for j in range(num_updates):
         resolv["j"] = j
         resolv["last_action_time"] = last_action_time
-        resolv.update(resolv(run_episode))
+        resolv.update(resolv("run_episode"))
         last_action_time = time.time()
-        resolv.update(resolv(optimize))
-        resolv(episode_tick)
+        resolv.update(resolv("optimize"))
+        resolv("episode_tick")
 
 
 if __name__ == "__main__":
