@@ -339,10 +339,7 @@ def episode_tick(
 
             pprint(LevelTracker.global_scoreboard)
 
-        if hasattr(actor_critic.base, "_last_values"):
-            actor_critic.base._last_values.report_values(
-                tensorboard_writer, total_num_steps
-            )
+        actor_critic.base.report_values(tensorboard_writer, total_num_steps)
         resolver.report_values(tensorboard_writer, total_num_steps)
 
 

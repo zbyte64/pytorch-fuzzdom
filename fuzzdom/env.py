@@ -269,23 +269,24 @@ class MiniWoBGraphEnvironment(gym.Env):
         location = await self._web.location
         assert location["protocol"] != "chrome-error:"
 
-    async def get_js_errors(self):
-        return await self.run_script("return core.getErrors();")
+    async def get_js_logs(self):
+        return await self.run_script("return core.getLogs();")
 
     async def refresh_state(self):
         # updates with new state with refetched dom and image
         await self.wait_for_dom()
         await self._injection_check()
+        js_logs = await self.get_js_logs()
+        if any(js_logs.values()):
+            print("JS logs:")
+            print(js_logs)
         self.state = MiniWoBGraphState(
             self.state.utterance,
             self.state.fields,
             await self.wob_dom(),
             None,  # await self._web.get_img(),
+            logs=js_logs,
         )
-        js_errors = await self.get_js_errors()
-        if js_errors:
-            print("JS errors:")
-            print(js_errors)
 
     def set_state(self, state):
         assert state
@@ -400,7 +401,8 @@ class MiniWoBGraphEnvironment(gym.Env):
         # Get the DOM
         dom_graph = await self.wob_dom()
         img = None  # await self._web.get_img()
-        state = MiniWoBGraphState(response, fields, dom_graph, img)
+        logs = await self.get_js_logs()
+        state = MiniWoBGraphState(response, fields, dom_graph, img, logs)
         return state
 
     async def get_metadata(self) -> dict:
@@ -472,7 +474,8 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
         fields = self.fields
         # Get the DOM
         dom_graph = await self.wob_dom()
-        state = MiniWoBGraphState(utterance, fields, dom_graph, None)
+        logs = await self.get_js_logs()
+        state = MiniWoBGraphState(utterance, fields, dom_graph, None, logs)
         return state
 
     async def wob_dom(self) -> nx.DiGraph:

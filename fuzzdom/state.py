@@ -24,13 +24,19 @@ class MiniWoBGraphState(object):
     """
 
     def __init__(
-        self, utterance: str, fields: Fields, dom_graph: nx.DiGraph, screenshot: Image
+        self,
+        utterance: str,
+        fields: Fields,
+        dom_graph: nx.DiGraph,
+        screenshot: Image,
+        logs: dict,
     ):
         assert isinstance(dom_graph, nx.DiGraph)
         assert len(dom_graph)
         self.utterance = utterance
         self.fields = fields
         self.dom_graph = dom_graph
+        self.logs = logs
         if screenshot:
             add_image_slices_to_graph(self.dom_graph, screenshot)
         self.screenshot = screenshot

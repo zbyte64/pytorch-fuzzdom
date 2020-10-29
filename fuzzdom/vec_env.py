@@ -195,13 +195,31 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
             ("leaf", "dom"),
         ],
     )
+
+    logs_data = vectorize_logs(graph_state.logs)
     return (
         dom_data,
         fields_data,
         fields_projection_data,
         leaves_data,
         actions_data,
+        logs_data,
     )
+
+
+def vectorize_logs(logs: dict):
+    # dictionary of arrays
+    x = []
+    for channel, entries in logs.items():
+        k = torch.from_numpy(short_embed(channel))
+        for entry in entries:
+            l = torch.from_numpy(short_embed(str(entry)))
+            x.append(torch.cat([k, l]))
+        if not len(entries):
+            l = torch.from_numpy(short_embed(""))
+            x.append(torch.cat([k, l]))
+    x = torch.stack(x)
+    return Data(x=x, edge_index=torch.zeros(2, 0))
 
 
 def encode_fields(fields):
@@ -313,7 +331,7 @@ class GraphGymWrapper(gym.Wrapper):
 
     def action(self, action):
         assert len(action) == 1, str(action)
-        (dom, objectives, obj_projection, leaves, actions) = self.last_observation
+        (dom, objectives, obj_projection, leaves, actions, *_) = self.last_observation
         combination_idx = action[0]
         # ux_action, field, leaf
         selected_combo = actions.combinations[combination_idx]

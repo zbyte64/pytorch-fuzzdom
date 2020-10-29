@@ -94,9 +94,9 @@ class DirectionalPropagation(ResolveMixin, nn.Module):
         return torch.max(mask, torch.max(pos_mask, dom_mask))
 
 
-class FixedActionDecoder(nn.Module):
+class SoftActionDecoder(nn.Module):
     def __init__(self):
-        super(FixedActionDecoder, self).__init__()
+        super().__init__()
         self.default_action = 1  # input goal
         self.action_words = [
             ["click", "submit", "target", "focus"],
@@ -104,6 +104,7 @@ class FixedActionDecoder(nn.Module):
             ["copy"],
             ["paste"],
         ]
+        action_size = len(self.action_words)
         from .domx import short_embed
 
         self.action_index = [i for i, a in enumerate(self.action_words) for word in a]
@@ -114,6 +115,9 @@ class FixedActionDecoder(nn.Module):
                 for word in a
             ],
             dim=2,
+        )
+        self.vote_fn = nn.Sequential(
+            init_ot(nn.Linear(action_size, action_size)), nn.Softmax(dim=1),
         )
 
     def forward(self, embedded_words):
@@ -130,6 +134,7 @@ class FixedActionDecoder(nn.Module):
             .view(batch_size, point_size)
             .view(-1)
         )
+
         batch_action_index = (
             torch.tensor(self.action_index, dtype=torch.long).repeat(batch_size)
             + action_size
@@ -138,17 +143,12 @@ class FixedActionDecoder(nn.Module):
             .repeat(1, point_size)
             .view(-1)
         ).to(device)
+
         batchwise_action_sims = global_max_pool(sims, batch_action_index).view(
             batch_size, action_size
         )
 
-        action_idx = (
-            batchwise_action_sims.argmax(dim=1)
-            + torch.arange(0, batch_size, device=device) * action_size
-        ).view(batch_size)
-        ret = torch.zeros(batch_size * action_size, device=device)
-        ret[action_idx] = 1.0
-        return ret.view(batch_size, action_size)
+        return self.vote_fn(batchwise_action_sims)
 
 
 def domain(target_domain=None):
@@ -179,7 +179,7 @@ class GNNBase(ResolveMixin, NNBase):
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
-        self.action_decoder = FixedActionDecoder()
+        self.action_decoder = SoftActionDecoder()
         self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
         self.global_dropout = nn.Dropout(p=0.0)
 
@@ -415,12 +415,22 @@ class GNNBase(ResolveMixin, NNBase):
             )
         )
         if SAFETY:
-            assert (
-                global_max_pool(obj_tag_similarities.max(dim=1)[0], dom_field.batch)
+            if not (
+                global_max_pool(obj_tag_similarities.max(dim=1).values, dom_field.batch)
                 .min()
                 .item()
                 > 0
-            )
+            ):
+                print("Warning: obj_tag_similarities didn't have positive values")
+                print(obj_tag_similarities)
+                print(field.query)
+                print(field.key)
+                print(
+                    global_max_pool(
+                        obj_tag_similarities.max(dim=1).values, dom_field.batch
+                    )
+                )
+                assert False
         return obj_tag_similarities
 
     @domain("dom_field")
@@ -468,6 +478,28 @@ class GNNBase(ResolveMixin, NNBase):
             leaf_ux_action.view(-1, 1), action.leaf_ux_action_index
         )
         return _leaf_ux_action * _obj_ux_action
+
+    @domain("dom")
+    def leaf_selector(
+        self,
+        dom,
+        field,
+        dom_field,
+        dom_ux_action,
+        obj_ux_action,
+        disabled_mask,
+        obj_att_input,
+    ):
+        ux_action_consensus = global_max_pool(
+            safe_bc(global_max_pool(obj_ux_action, field.batch), dom_field.field_index)
+            * safe_bc(dom_ux_action, dom_field.dom_index),
+            dom_field.dom_index,
+        )
+        obj_int = global_max_pool(obj_att_input, dom_field.dom_index)
+        active_mask = 1 - disabled_mask
+        return (
+            ux_action_consensus.max(dim=1, keepdim=True).values * active_mask * obj_int
+        )
 
     @domain("action")
     def dom_interest(self, action, leaves_att, disabled_mask, ux_action_consensus):
@@ -698,11 +730,16 @@ class GNNBase(ResolveMixin, NNBase):
 class Instructor(GNNBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.objective_fn = Encoder("GAE", self.hidden_size, self.text_embed_size)
+        self.key_fn = Encoder("GAE", self.hidden_size, self.text_embed_size)
+        self.query_fn = Encoder("GAE", self.hidden_size, self.text_embed_size)
 
     def field(self, dom, _field, full_x):
-        values = self.objective_fn(full_x, dom.dom_edge_index)
-        _field.query = global_mean_pool(values, dom.batch)
+        _field.key = global_mean_pool(
+            self.key_fn(full_x, dom.dom_edge_index), dom.batch
+        )
+        _field.query = global_mean_pool(
+            self.query_fn(full_x, dom.dom_edge_index), dom.batch
+        )
         return _field
 
     def forward(self, inputs, rnn_hxs, masks):
@@ -710,7 +747,7 @@ class Instructor(GNNBase):
 
         assert isinstance(inputs, tuple), str(type(inputs))
         assert all(map(lambda x: isinstance(x, Batch), inputs))
-        dom, objectives, objectives_projection, leaves, actions = inputs
+        dom, objectives, objectives_projection, leaves, actions, *_ = inputs
         assert actions.edge_index is not None, str(inputs)
         self.start_resolve(
             {

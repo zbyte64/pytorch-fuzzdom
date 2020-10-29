@@ -8,7 +8,7 @@ from fuzzdom.models import GraphPolicy, Instructor
 from fuzzdom.env import CrawlTaskEnvironment, open_driver
 from fuzzdom.rdn import make_rdn_vec_envs, RDNScorer
 from fuzzdom.factory_resolver import FactoryResolver
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Batch
 from torch_geometric.utils import train_test_split_edges, remove_self_loops
 
 from .graph import *
@@ -19,20 +19,26 @@ class ModelBasedLeafFilter:
         self.actor_critic = actor_critic.to("cpu")
         self.k = k
 
+    def _wrap_data(self, d):
+        return Batch.from_data_list([d])
+
     def __call__(self, leaves, dom, field, dom_field, **kwargs):
         if len(leaves) <= self.k:
             return leaves
         fr = FactoryResolver(
-            self.actor_critic.base, dom=dom, _field=field, dom_field=dom_field
+            self.actor_critic.base,
+            dom=self._wrap_data(dom),
+            _field=self._wrap_data(field),
+            dom_field=self._wrap_data(dom_field),
         )
         with torch.no_grad():
-            # TODO: use dom interest?
-            disabled_mask = 1 - fr(self.actor_critic.base.disabled_mask).flatten()
-            d = torch.ones(disabled_mask.shape[0], dtype=torch.long)
+            mask = fr("leaf_selector").flatten()
+            # create anti-leaves mask
+            d = torch.ones(mask.shape[0], dtype=torch.long)
             d[torch.tensor(leaves)] = 0
-            d = 1 - d
-            disabled_mask[d] = 0.0
-            topk = torch.topk(disabled_mask, self.k)
+            # non-leaves set to 0
+            mask[d] = 0.0
+            topk = torch.topk(mask, self.k)
             return topk.indices.tolist()
 
 
@@ -128,10 +134,12 @@ def optimize(
     for subset in sampler:
         if autoencoder_subset is None:
             autoencoder_subset = subset
-        doms = receipts.redeem(torch.tensor(subset))[0]
+        ds = receipts.redeem(torch.tensor(subset))
+        doms = ds[0]
+        logs = ds[-1]
         doms.edge_index = doms.dom_edge_index
         # train rdn_scorer
-        rdn_loss = rdn_scorer(doms)
+        rdn_loss = rdn_scorer(doms, logs)
         rdn_loss.backward()
     rdn_optimizer.step()
 

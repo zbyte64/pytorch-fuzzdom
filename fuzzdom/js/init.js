@@ -65,14 +65,28 @@ window.core = {
     window.core.previousDOMInfo = loop(document.body, "html");
     return window.core.previousDOMInfo;
   },
-  recordedErrors: [],
-  getErrors: function() {
-    ret = window.core.recordedErrors;
-    window.core.recordedErrors = []
+  logs: {},
+  getLogs: function() {
+    ret = window.core.logs;
+    window.core.logs = {}
+    Object.keys(ret).map(function(x) {window.core.logs[x] = []})
     return ret;
   }
 };
 
 window.addEventListener('error', function(event) {
-  window.core.recordedErrors.push(event);
+  window.core.logs['windowError'].push(event);
 });
+
+function bindConsoleLog(attr) {
+  fn = console[attr]
+  f = fn.bind(console)
+  window.core.logs[attr] = []
+  console[attr] = function() {
+    window.core.logs[attr].push(Array.from(arguments))
+    f.apply(console, arguments)
+  }
+}
+
+if (console.log) bindConsoleLog('log');
+if (console.error) bindConsoleLog('error');

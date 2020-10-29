@@ -45,9 +45,6 @@ class FactoryResolver(dict):
                     writer.add_histogram(f"{prefix}{k}", t, step_number)
             elif isinstance(t, (int, float)):
                 writer.add_scalar(f"{prefix}{k}", t, step_number)
-            # ??
-            # if hasattr(t, "report_values"):
-            #    t.report_values(writer, step_number, f"{prefix}{k}_")
 
     def __call__(self, func):
         """
