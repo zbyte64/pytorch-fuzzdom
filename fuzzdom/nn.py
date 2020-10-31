@@ -32,7 +32,6 @@ class ResolveMixin:
             if m is self:
                 continue
             if hasattr(m, "report_values"):
-                print(k, type(m))
                 m.report_values(writer, step_number, f"{prefix}{k}_")
 
 

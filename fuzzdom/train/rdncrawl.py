@@ -38,6 +38,7 @@ class ModelBasedLeafFilter:
             d[torch.tensor(leaves)] = 0
             # non-leaves set to 0
             mask[d] = 0.0
+            assert mask.max().item() > 0, "Leaf selector returned no active leaves"
             topk = torch.topk(mask, self.k)
             return topk.indices.tolist()
 
@@ -45,7 +46,7 @@ class ModelBasedLeafFilter:
 def rdn_scorer(device, text_embed_size, encoder_size):
     in_size = text_embed_size * 4 + 9
     out_size = encoder_size
-    return RDNScorer(in_size, out_size).to(device)
+    return RDNScorer(in_size, out_size).to(device).eval()
 
 
 def filter_leaves(actor_critic):
@@ -135,13 +136,13 @@ def optimize(
         if autoencoder_subset is None:
             autoencoder_subset = subset
         ds = receipts.redeem(torch.tensor(subset))
-        doms = ds[0]
+        dom = ds[0]
         logs = ds[-1]
-        doms.edge_index = doms.dom_edge_index
         # train rdn_scorer
-        rdn_loss = rdn_scorer(doms, logs)
+        rdn_loss = rdn_scorer.loss(dom, logs)
         rdn_loss.backward()
     rdn_optimizer.step()
+    rdn_scorer.eval()
 
     autoencoder_loss = None
     if autoencoder_subset is not None:
@@ -163,6 +164,7 @@ def optimize(
             autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
             autoencoder_loss.backward()
         autoencoder_optimizer.step()
+        autoencoder.eval()
 
     filter_leaves.actor_critic.load_state_dict(actor_critic.state_dict())
 

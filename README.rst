@@ -56,7 +56,12 @@ Train DOM Autoencoder::
   docker-compose run app python -m fuzzdom.train.autoencoder --cuda
 
 
-Train agent::
+Train with RDN webcrawl::
+
+  docker-compose run app python -m fuzzdom.train.rdncrawl --num-processes=4 --num-steps=16 --log-interval=1 --algo=ppo --env-name=http://172.17.0.1:8080/
+
+
+Train agent against MiniWoB++::
 
   docker-compose run app python -m fuzzdom.train.graph --num-processes=16 --num-steps=32 --log-interval=1 --algo=ppo --env-name=levels
 

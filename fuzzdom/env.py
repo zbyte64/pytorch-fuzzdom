@@ -51,28 +51,7 @@ def set_arsenic_log_level(level=logging.WARNING):
 set_arsenic_log_level()
 
 
-async def open_driver(proxy=None):
-    chromeOptions = {
-        "args": [
-            "enable-automation",
-            "--headless",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-infobars",
-            "--disable-dev-shm-usage",
-            "--disable-browser-side-navigation",
-        ]
-    }
-    capabilities = {"browserName": "chrome"}
-    if proxy and False:
-        capabilities["proxy"] = {
-            "proxyType": "manual",
-            "httpProxy": proxy,
-            "ftpProxy": proxy,
-            "sslProxy": proxy,
-            "socksProxy": proxy,
-        }
-
+async def open_driver(capabilities={"browserName": "chrome"}):
     if "SELENIUM_URL" in os.environ:
         driver = await start_session(
             services.Remote(os.getenv("SELENIUM_URL")),
@@ -92,20 +71,18 @@ class WebInterface:
 
     def __init__(self, driver=None):
         self._driver = driver
-        self._load_code = "".join(random.sample(string.ascii_letters, 8))
-
-    async def open(self):
-        print("Browser Task: " + str(self._driver))
-
-    async def close(self):
-        pass
+        self._load_code = None
 
     async def _injection_check(self):
-        # inject javascript here
-        loaded = await self._driver.execute_script(
-            f"document.body.dataset.{self._load_code}"
-        )
+        loaded = False
+        if self._load_code:
+            loaded = await self._driver.execute_script(
+                f"document.body.dataset.{self._load_code}"
+            )
+        else:
+            self._load_code = "".join(random.sample(string.ascii_letters, 8))
         if not loaded:
+            # inject javascript here
             await self._driver.execute_script(self.initial_js_code())
             await self._driver.execute_script(
                 f"document.body.dataset.{self._load_code} = true;"
@@ -155,13 +132,27 @@ class WebInterface:
 
 
 class ManagedWebInterface(WebInterface):
-    def __init__(self, proxy=None):
-        super(ManagedWebInterface, self).__init__()
-        self.proxy = proxy
+    """
+    Provides a driver from the environment with a built-in circuit-breaker
+    """
+
+    def __init__(self, error_circuit_break=3):
+        super().__init__()
+        self._error_count = 0
+        self._error_circuit_break = error_circuit_break
 
     async def open(self):
-        self._driver = await open_driver(self.proxy)
-        return await super(ManagedWebInterface, self).open()
+        try:
+            self._driver = await open_driver()
+            await self._injection_check()
+        except ArsenicError:
+            self._error_count += 1
+            if self._error_count > self._error_circuit_break:
+                raise RunTimeError("Repetitive driver errors caused circuit break")
+            raise
+        else:
+            self._error_count = 0
+        print("Browser Task: " + str(self._driver))
 
     async def close(self):
         if getattr(self, "_driver", None):
@@ -301,7 +292,7 @@ class MiniWoBGraphEnvironment(gym.Env):
 
     async def async_reset(self) -> MiniWoBGraphState:
         if not self._web:
-            self._web = ManagedWebInterface(proxy=os.getenv("PROXY_HOST"))
+            self._web = ManagedWebInterface()
         if not self.driver:
             await self.open()
         await self.select_level_lock
@@ -534,7 +525,7 @@ class CrawlTaskEnvironment(CustomTaskEnvironment):
 
     async def async_reset(self):
         if not self._web:
-            self._web = ManagedWebInterface(proxy=os.getenv("PROXY_HOST"))
+            self._web = ManagedWebInterface()
         while True:
             try:
                 if not self.driver:
