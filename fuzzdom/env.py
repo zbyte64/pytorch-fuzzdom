@@ -521,6 +521,7 @@ class CrawlTaskEnvironment(CustomTaskEnvironment):
             "raw_reward": reward,
             "reason": reason,
             "href": l["href"],
+            "episode": {"r": reward},
         }
 
     async def async_reset(self):

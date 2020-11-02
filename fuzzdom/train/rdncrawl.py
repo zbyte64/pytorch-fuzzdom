@@ -4,7 +4,7 @@ import gym
 import copy
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from a2c_ppo_acktr import algo, utils
-from fuzzdom.models import GraphPolicy, Instructor
+from fuzzdom.models import GraphPolicy, Instructor, autoencoder_x
 from fuzzdom.env import CrawlTaskEnvironment, open_driver
 from fuzzdom.rdn import make_rdn_vec_envs, RDNScorer
 from fuzzdom.factory_resolver import FactoryResolver
@@ -159,7 +159,7 @@ def optimize(
                 continue
             # no validation ?
             # data = train_test_split_edges(data)
-            x = rdn_scorer.x(data)
+            x = autoencoder_x(data)
             z = autoencoder.encode(x, data.edge_index)
             autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
             autoencoder_loss.backward()

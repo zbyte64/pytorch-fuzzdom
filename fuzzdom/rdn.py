@@ -4,8 +4,9 @@ from torch import nn
 import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool
 
-from .models import Encoder, ResolveMixin
+from .models import Encoder, ResolveMixin, autoencoder_x
 from .vec_env import make_vec_envs
+from .functions import init_xu
 
 
 def freeze_model(model):
@@ -22,39 +23,22 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
         self.dom_guesser = Encoder("GAE", in_channels, out_channels)
         self.dom_target = freeze_model(Encoder("GAE", in_channels, out_channels))
         self.log_guesser = nn.Sequential(
-            nn.Linear(text_embed_size * 2, text_embed_size),
+            init_xu(nn.Linear(text_embed_size * 2, text_embed_size), "relu"),
             nn.ReLU(),
-            nn.Linear(text_embed_size, out_channels),
+            init_xu(nn.Linear(text_embed_size, out_channels)),
         )
         self.log_target = freeze_model(
             nn.Sequential(
-                nn.Linear(text_embed_size * 2, text_embed_size),
+                init_xu(nn.Linear(text_embed_size * 2, text_embed_size), "relu"),
                 nn.ReLU(),
-                nn.Linear(text_embed_size, out_channels),
+                init_xu(nn.Linear(text_embed_size, out_channels)),
             )
         )
         self.std_dev = torch.tensor(100.0)
         self.mean = torch.tensor(0.0)
 
     def x(self, dom):
-        return torch.cat(
-            [
-                dom.text,
-                dom.value,
-                dom.radio_value,
-                dom.tag,
-                dom.classes,
-                dom.rx,
-                dom.ry,
-                dom.width,
-                dom.height,
-                dom.top,
-                dom.left,
-                dom.focused,
-                dom.depth,
-            ],
-            dim=1,
-        )
+        return autoencoder_x(dom)
 
     def forward(self, dom, logs):
         self.start_resolve({"dom": dom, "logs": logs})

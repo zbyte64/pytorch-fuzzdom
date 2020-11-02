@@ -218,8 +218,6 @@ def run_episode(
         obs, reward, done, infos = envs.step(action)
 
         for e, i in enumerate(infos):
-            if i.get("real_action") is not None:
-                action[e] = i["real_action"]
             if i.get("bad_transition"):
                 action[e] = torch.zeros_like(action[e])
 

@@ -8,6 +8,7 @@ from torch_geometric.nn import (
     global_max_pool,
     global_add_pool,
     global_mean_pool,
+    GlobalAttention,
     BatchNorm,
     GraphSizeNorm,
     InstanceNorm,
@@ -149,6 +150,27 @@ class SoftActionDecoder(nn.Module):
         )
 
         return self.vote_fn(batchwise_action_sims)
+
+
+def autoencoder_x(dom):
+    return torch.cat(
+        [
+            dom.text,
+            dom.value,
+            dom.tag,
+            dom.classes,
+            dom.radio_value,
+            dom.rx,
+            dom.ry,
+            dom.width,
+            dom.height,
+            dom.top,
+            dom.left,
+            dom.focused,
+            dom.depth,
+        ],
+        dim=1,
+    )
 
 
 def domain(target_domain=None):
@@ -327,29 +349,7 @@ class GNNBase(ResolveMixin, NNBase):
         if not self.dom_encoder:
             return None
         with torch.no_grad():
-            return torch.tanh(
-                self.dom_encoder(
-                    torch.cat(
-                        [
-                            dom.text,
-                            dom.value,
-                            dom.radio_value,
-                            dom.tag,
-                            dom.classes,
-                            dom.rx,
-                            dom.ry,
-                            dom.width,
-                            dom.height,
-                            dom.top,
-                            dom.left,
-                            dom.focused,
-                            dom.depth,
-                        ],
-                        dim=1,
-                    ),
-                    dom.dom_edge_index,
-                )
-            )
+            return torch.tanh(self.dom_encoder(autoencoder_x(dom), dom.dom_edge_index,))
 
     @domain("dom")
     def full_x(self, dom, x, encoded_x):
@@ -730,15 +730,79 @@ class GNNBase(ResolveMixin, NNBase):
 class Instructor(GNNBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.key_fn = Encoder("GAE", self.hidden_size, self.text_embed_size)
-        self.query_fn = Encoder("GAE", self.hidden_size, self.text_embed_size)
+        # tag and classes already included in full_x
+        self.instructor_size = self.hidden_size + self.text_embed_size * 2
+        self.key_fn = GlobalAttention(
+            nn.Sequential(
+                init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
+                nn.ReLU(),
+                init_xn(nn.Linear(self.text_embed_size, 1), "relu"),
+                nn.ReLU(),
+            )
+        )
+        self.query_fn = GlobalAttention(
+            nn.Sequential(
+                init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
+                nn.ReLU(),
+                init_xn(nn.Linear(self.text_embed_size, 1), "relu"),
+                nn.ReLU(),
+            )
+        )
+        from .domx import short_embed
+
+        self.target_words = [
+            "click",
+            "submit",
+            "target",
+            "focus",
+            "select",
+            "copy",
+            "paste",
+        ]
+        self.other_values = torch.cat(
+            list(map(lambda x: torch.from_numpy(short_embed(x)), self.target_words,))
+        ).view(1, -1)
+        self.key_selection_size = len(self.target_words) + 4
+        self.key_softmax_fn = nn.Sequential(
+            init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(self.text_embed_size, self.key_selection_size), "relu"),
+            nn.ReLU(),
+        )
+        self.query_softmax_fn = nn.Sequential(
+            init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(self.text_embed_size, 4), "relu"),
+            nn.ReLU(),
+        )
 
     def field(self, dom, _field, full_x):
-        _field.key = global_mean_pool(
-            self.key_fn(full_x, dom.dom_edge_index), dom.batch
+        batch_size = _field.batch.shape[0]
+        device = full_x.device
+        # tag and classes already included in the front
+        fuller_x = torch.cat([dom.text, dom.value, full_x], dim=1)
+        key_softmax = F.softmax(
+            global_add_pool(self.key_softmax_fn(fuller_x), dom.batch), dim=1
+        ).repeat_interleave(self.text_embed_size, dim=1)
+        key = self.key_fn(fuller_x, dom.batch)[:, : self.text_embed_size * 4]
+        key = torch.cat(
+            [key, self.other_values.to(device).repeat(batch_size, 1)], dim=1
         )
-        _field.query = global_mean_pool(
-            self.query_fn(full_x, dom.dom_edge_index), dom.batch
+
+        _field.key = (
+            (key * key_softmax)
+            .view(batch_size, self.text_embed_size, self.key_selection_size)
+            .sum(dim=2)
+        )
+        assert _field.key.shape == _field.query.shape, str(
+            (_field.key.shape, _field.query.shape)
+        )
+        query_softmax = F.softmax(
+            global_add_pool(self.query_softmax_fn(fuller_x), dom.batch), dim=1
+        ).repeat_interleave(self.text_embed_size, dim=1)
+        query = self.query_fn(fuller_x, dom.batch)[:, : self.text_embed_size * 4]
+        _field.query = (
+            (query * query_softmax).view(batch_size, self.text_embed_size, 4).sum(dim=2)
         )
         return _field
 
