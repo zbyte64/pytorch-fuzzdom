@@ -181,6 +181,7 @@ def run_episode(
     args, envs, rollouts, actor_critic, agent, j, num_updates, last_action_time, obs,
 ):
     episode_rewards = deque(maxlen=args.num_steps * args.num_processes)
+    rewards = deque(maxlen=args.num_steps * args.num_processes)
     if j and last_action_time + 5 < time.time():
         # task likely timed out
         print("Reseting tasks")
@@ -217,6 +218,8 @@ def run_episode(
         # Obser reward and next obs
         obs, reward, done, infos = envs.step(action)
 
+        rewards.append(reward)
+
         for e, i in enumerate(infos):
             if i.get("bad_transition"):
                 action[e] = torch.zeros_like(action[e])
@@ -241,7 +244,11 @@ def run_episode(
             bad_masks,
         )
 
-    return {"obs": obs, "episode_rewards": episode_rewards}
+    return {
+        "obs": obs,
+        "episode_rewards": episode_rewards,
+        "rewards": torch.tensor(rewards),
+    }
 
 
 def optimize(args, actor_critic, agent, rollouts):

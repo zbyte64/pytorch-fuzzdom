@@ -53,7 +53,7 @@ def filter_leaves(actor_critic):
     return ModelBasedLeafFilter(copy.deepcopy(actor_critic))
 
 
-def envs(args, receipts, rdn_scorer, filter_leaves):
+def envs(args, receipts, rdn_scorer, autoencoder, filter_leaves):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
@@ -77,6 +77,7 @@ def envs(args, receipts, rdn_scorer, filter_leaves):
         [make_env() for i in range(args.num_processes)],
         receipts,
         rdn_scorer,
+        autoencoder,
         filter_leaves=filter_leaves,
     )
     return envs
@@ -149,6 +150,7 @@ def optimize(
         # train autoencoder
         autoencoder.train()
         autoencoder_optimizer.zero_grad()
+        seen_values = list()
         for i in autoencoder_subset:
             data = receipts[i][0]
             del data.batch
@@ -163,8 +165,11 @@ def optimize(
             z = autoencoder.encode(x, data.edge_index)
             autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
             autoencoder_loss.backward()
+            seen_values.append(autoencoder_loss.clone().detach())
         autoencoder_optimizer.step()
         autoencoder.eval()
+        if len(seen_values) > 1:
+            autoencoder.loss_std_dev = torch.cat(seen_values).std()
 
     filter_leaves.actor_critic.load_state_dict(actor_critic.state_dict())
 

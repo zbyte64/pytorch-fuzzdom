@@ -804,6 +804,15 @@ class Instructor(GNNBase):
         _field.query = (
             (query * query_softmax).view(batch_size, self.text_embed_size, 4).sum(dim=2)
         )
+        with torch.no_grad():
+            if (
+                _field.query.clone().detach().requires_grad_(False).max().min().item()
+                <= 0
+            ):
+                print(query_softmax)
+                print(query)
+                print(_field.query)
+                assert False
         return _field
 
     def forward(self, inputs, rnn_hxs, masks):

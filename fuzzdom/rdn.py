@@ -2,7 +2,7 @@ import gym
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch_geometric.nn import global_mean_pool
+from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
 
 from .models import Encoder, ResolveMixin, autoencoder_x
 from .vec_env import make_vec_envs
@@ -34,8 +34,7 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
                 init_xu(nn.Linear(text_embed_size, out_channels)),
             )
         )
-        self.std_dev = torch.tensor(100.0)
-        self.mean = torch.tensor(0.0)
+        self.loss_std_dev = torch.tensor(0.01)
 
     def x(self, dom):
         return autoencoder_x(dom)
@@ -45,18 +44,18 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
         return self.resolve_value(self.raw_score)
 
     def guess_dom(self, dom, x):
-        return global_mean_pool(self.dom_guesser(x, dom.dom_edge_index), dom.batch)
+        return global_max_pool(self.dom_guesser(x, dom.dom_edge_index), dom.batch)
 
     def actual_dom(self, dom, x):
         with torch.no_grad():
-            return global_mean_pool(self.dom_target(x, dom.dom_edge_index), dom.batch)
+            return global_max_pool(self.dom_target(x, dom.dom_edge_index), dom.batch)
 
     def guess_logs(self, logs):
-        return global_mean_pool(self.log_guesser(logs.x), logs.batch)
+        return global_max_pool(self.log_guesser(logs.x), logs.batch)
 
     def actual_logs(self, logs):
         with torch.no_grad():
-            return global_mean_pool(self.log_target(logs.x), logs.batch)
+            return global_max_pool(self.log_target(logs.x), logs.batch)
 
     def raw_score(self, guess_logs, actual_logs, guess_dom, actual_dom):
         return F.pairwise_distance(actual_dom, guess_dom) + F.pairwise_distance(
@@ -66,16 +65,14 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
     def score(self, dom, logs):
         self.start_resolve({"dom": dom, "logs": logs})
         scores = self.resolve_value(self.raw_score)
-        return scores / self.std_dev.clamp(0.0001, 1000)
+        return scores / self.loss_std_dev.clamp(0.0001, 1000) / 10000
 
     def loss(self, dom, logs):
         self.start_resolve({"dom": dom, "logs": logs})
         scores = self.resolve_value(self.raw_score)
         loss = scores.mean()
         with torch.no_grad():
-            # TODO momentum?
-            self.std_dev = (scores.std() + self.std_dev) / 2
-            self.mean = (loss + self.mean) / 2
+            self.loss_std_dev = scores.std()
         return loss
 
 
@@ -86,19 +83,48 @@ class RDNScorerGymWrapper(gym.Wrapper):
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
+        reward += self.score_observation(observation)
+        return observation, reward, done, info
+
+    def score_observation(self, observation):
         dom = observation[0]
         logs = observation[-1]
         with torch.no_grad():
             score = self.rdn_scorer.score(dom, logs)
-        reward = score.item()
+            print("RDN SCORE", score)
+            return score.item()
+
+
+class AEScorerGymWrapper(gym.Wrapper):
+    def __init__(self, env, autoencoder):
+        super().__init__(env)
+        self.autoencoder = autoencoder
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+        reward += self.score_observation(observation)
         return observation, reward, done, info
 
+    def score_observation(self, observation):
+        if not hasattr(self.autoencoder, "loss_std_dev"):
+            return 0
+        dom = observation[0]
+        with torch.no_grad():
+            x = autoencoder_x(dom)
+            z = self.autoencoder.encode(x, dom.edge_index)
+            score = self.autoencoder.recon_loss(z, dom.edge_index)
+            score = score / self.autoencoder.loss_std_dev.clamp(0.0001, 1000) / 10000
+            print("AE SCORE", score)
+            return score.item()
 
-def make_rdn_vec_envs(envs, receipts, rdn_scorer, filter_leaves=None):
+
+def make_rdn_vec_envs(envs, receipts, rdn_scorer, autoencoder, filter_leaves=None):
 
     return make_vec_envs(
         envs,
         receipts,
-        inner=lambda env: RDNScorerGymWrapper(env, rdn_scorer),
+        inner=lambda env: AEScorerGymWrapper(
+            RDNScorerGymWrapper(env, rdn_scorer), autoencoder
+        ),
         filter_leaves=filter_leaves,
     )

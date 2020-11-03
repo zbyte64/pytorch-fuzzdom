@@ -365,21 +365,13 @@ class GraphGymWrapper(gym.Wrapper):
 
     def step(self, action):
         observation, reward, done, info = self.env.step(self.action(action))
-        self.step_result((observation, reward, done, info))
         return self.observation(observation), reward, done, info
 
-    def step_result(self, result):
-        observation, reward, done, info = result
-        if done or info.get("task_done"):
-            self.prior_actions = []
-
     def reset(self):
-        self.prior_actions = []
         obs = self.env.reset()
         return self.observation(obs)
 
     async def exec_reset(self, executor):
-        self.prior_actions = []
         obs = self.env.reset()
         return await self.exec_observation(obs, executor)
 

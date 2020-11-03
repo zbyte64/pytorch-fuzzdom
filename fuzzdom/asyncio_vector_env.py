@@ -67,14 +67,19 @@ async def call_wrapped_async_reset(env, executor):
 
 async def call_wrapped_async_step(env, action, executor):
     root_env = env
+    env_stack = [root_env]
     while hasattr(root_env, "env"):
         root_env = root_env.env
+        env_stack.append(root_env)
     action = await resolve_env_fn(env, action, "action", executor)
     result = await root_env.async_step(action)
-    _ = await resolve_env_fn(env, result, "step_result", executor)
     reward = await resolve_env_fn(env, result[1], "reward", executor)
     # intensive serialization gets tasked out
     obs = await resolve_env_fn(env, result[0], "observation", executor)
+    v_obs = env.receipt_factory.redeem(obs)
+    for env in env_stack:
+        if hasattr(env, "score_observation"):
+            reward += env.score_observation(v_obs)
     return (obs, reward, *result[2:])
 
 
