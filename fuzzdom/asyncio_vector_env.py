@@ -78,7 +78,7 @@ async def call_wrapped_async_step(env, action, executor):
     obs = await resolve_env_fn(env, result[0], "observation", executor)
     v_obs = env.receipt_factory.redeem(obs)
     for env in env_stack:
-        if hasattr(env, "score_observation"):
+        if hasattr(type(env), "score_observation"):
             reward += env.score_observation(v_obs)
     return (obs, reward, *result[2:])
 

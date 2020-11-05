@@ -736,16 +736,16 @@ class Instructor(GNNBase):
             nn.Sequential(
                 init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
                 nn.ReLU(),
-                init_xn(nn.Linear(self.text_embed_size, 1), "relu"),
-                nn.ReLU(),
+                init_xn(nn.Linear(self.text_embed_size, 1)),
+                # nn.ReLU(),
             )
         )
         self.query_fn = GlobalAttention(
             nn.Sequential(
                 init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
                 nn.ReLU(),
-                init_xn(nn.Linear(self.text_embed_size, 1), "relu"),
-                nn.ReLU(),
+                init_xn(nn.Linear(self.text_embed_size, 1)),
+                # nn.ReLU(),
             )
         )
         from .domx import short_embed

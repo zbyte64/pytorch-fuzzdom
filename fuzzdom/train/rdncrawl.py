@@ -6,7 +6,7 @@ from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from a2c_ppo_acktr import algo, utils
 from fuzzdom.models import GraphPolicy, Instructor, autoencoder_x
 from fuzzdom.env import CrawlTaskEnvironment, open_driver
-from fuzzdom.rdn import make_rdn_vec_envs, RDNScorer
+from fuzzdom.rdn import make_rdn_vec_envs, RDNScorer, NormalizeScore
 from fuzzdom.factory_resolver import FactoryResolver
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils import train_test_split_edges, remove_self_loops
@@ -43,6 +43,10 @@ class ModelBasedLeafFilter:
             return topk.indices.tolist()
 
 
+def autoencoder_score_norm():
+    return NormalizeScore(scale_by=1e-2)
+
+
 def rdn_scorer(device, text_embed_size, encoder_size):
     in_size = text_embed_size * 4 + 9
     out_size = encoder_size
@@ -53,7 +57,9 @@ def filter_leaves(actor_critic):
     return ModelBasedLeafFilter(copy.deepcopy(actor_critic))
 
 
-def envs(args, receipts, rdn_scorer, autoencoder, filter_leaves):
+def envs(
+    args, receipts, rdn_scorer, autoencoder, autoencoder_score_norm, filter_leaves
+):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
@@ -75,9 +81,10 @@ def envs(args, receipts, rdn_scorer, autoencoder, filter_leaves):
 
     envs = make_rdn_vec_envs(
         [make_env() for i in range(args.num_processes)],
-        receipts,
-        rdn_scorer,
-        autoencoder,
+        receipts=receipts,
+        rdn_scorer=rdn_scorer,
+        autoencoder=autoencoder,
+        autoencoder_score_norm=autoencoder_score_norm,
         filter_leaves=filter_leaves,
     )
     return envs
@@ -105,6 +112,7 @@ def optimize(
     receipts,
     rdn_optimizer,
     autoencoder_optimizer,
+    autoencoder_score_norm,
     filter_leaves,
     device,
 ):
@@ -165,11 +173,11 @@ def optimize(
             z = autoencoder.encode(x, data.edge_index)
             autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
             autoencoder_loss.backward()
-            seen_values.append(autoencoder_loss.clone().detach())
+            seen_values.append(autoencoder_loss.clone().detach().view(1))
         autoencoder_optimizer.step()
         autoencoder.eval()
-        if len(seen_values) > 1:
-            autoencoder.loss_std_dev = torch.cat(seen_values).std()
+        if len(seen_values) > 5:
+            autoencoder_score_norm.update(torch.cat(seen_values))
 
     filter_leaves.actor_critic.load_state_dict(actor_critic.state_dict())
 
