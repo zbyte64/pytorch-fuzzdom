@@ -222,6 +222,32 @@ def miniwob_to_graph(d: dict) -> nx.DiGraph:
     return g
 
 
+def miniwob_to_dominfo(d: dict):
+    nodes = []
+    edges = []
+
+    def traverse(n, p=None):
+        assert "ref" in n
+        attrs = dict(n)
+        # random.shuffle(attrs["children"])
+
+        attrs["ry"] = n["top"]
+        attrs["rx"] = n["left"]
+        if p:
+            attrs["ry"] -= p["top"]
+            attrs["rx"] -= p["left"]
+        i = len(nodes)
+        nodes.append(attrs)
+        edges.append((i, i))
+        for child in attrs["children"]:
+            c = traverse(child, n)
+            edges.append((i, c))
+        return i
+
+    traverse(d)
+    return {"nodes": nodes, "edges": edges}
+
+
 def add_image_slices_to_graph(
     g: nx.DiGraph, img: Image, window_scroll=(0, 0), image_size=(48, 48)
 ):

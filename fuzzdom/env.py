@@ -28,8 +28,8 @@ from miniwob.fields import Fields
 
 from PIL import Image
 
-from .state import MiniWoBGraphState, fields_factory
-from .domx import json_to_graph, miniwob_to_graph
+from .state import MiniWoBGraphState, fields_factory, DomInfo
+from .domx import miniwob_to_dominfo
 from .dir_paths import JS_PATH
 
 
@@ -169,20 +169,11 @@ async def send_keys(device, text: str, ref=None):
     assert isinstance(text, str), str(text)
     if ref is not None:
         knows_ref = await device.execute_script(
-            f"return core.previousDOMInfo['{ref}'] != null"
+            f"""
+            return core.elementType('{ref}', '{text}');
+            """
         )
-        if knows_ref:
-            await device.execute_script(
-                f"""
-                core.previousDOMInfo['{ref}'].click();
-                core.previousDOMInfo['{ref}'].focus();
-                core.previousDOMInfo['{ref}'].value = '{text}';
-                """
-            )
-            return
-        else:
-            pass
-            # print("previous dom info does not have ref:", ref, knows_ref)
+        return knows_ref
     ticks = []
     keyboard = actions.Keyboard("keyboard")
     for key in text:
@@ -247,14 +238,11 @@ class MiniWoBGraphEnvironment(gym.Env):
     async def run_script(self, s: str):
         return await self.driver.execute_script(s)
 
-    async def wob_dom(self) -> nx.DiGraph:
+    async def wob_dom(self) -> DomInfo:
         dom_info = await self.run_script("return core.getDOMInfo();")
         if "ref" in dom_info:
-            return miniwob_to_graph(dom_info)
-        exclude_ids = {"reward-display", "sync-task-cover", "click-canvas", "query"}
-        return json_to_graph(
-            dom_info, exclude=lambda n: n["a"].get("id") in exclude_ids
-        )
+            dom_info = miniwob_to_dominfo(dom_info)
+        return DomInfo(**dom_info)
 
     async def _injection_check(self):
         location = await self._web.location
@@ -311,7 +299,7 @@ class MiniWoBGraphEnvironment(gym.Env):
     async def async_step(self, action) -> tuple:
         action_id, ref, value = action
         assert isinstance(value, str), str(value)
-        assert ref in self.state.dom_graph, str(ref)
+        # assert ref in self.state.dom_info.nodes, str(ref)
         f = self._actions[action_id]
         # print("#", action_id, ref, value)
 
@@ -321,11 +309,11 @@ class MiniWoBGraphEnvironment(gym.Env):
             try:
                 await waitable
             except:
-                dom_g = await self.wob_dom()
-                if ref not in dom_g:
-                    print("Bad node?", ref, self.state.dom_graph.nodes[ref])
-                else:
-                    print("Node was found!", ref)
+                # dom_g = await self.wob_dom()
+                # if ref not in dom_g.nodes:
+                #    print("Bad node?", ref, self.state.dom_info.nodes[ref])
+                # else:
+                #    print("Node was found!", ref)
                 raise
         # wait for an amount of time but take into account future js execution time
         wait_time = 0  # max(self.wait_ms / 1000 - (time.time() - start_time) * 2, 0)
@@ -390,10 +378,10 @@ class MiniWoBGraphEnvironment(gym.Env):
         response = await self.run_script("return core.getUtterance();")
         fields = fields_factory(self.task, response)
         # Get the DOM
-        dom_graph = await self.wob_dom()
+        dom_info = await self.wob_dom()
         img = None  # await self._web.get_img()
         logs = await self.get_js_logs()
-        state = MiniWoBGraphState(response, fields, dom_graph, img, logs)
+        state = MiniWoBGraphState(response, fields, dom_info, img, logs)
         return state
 
     async def get_metadata(self) -> dict:
@@ -464,15 +452,14 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
         utterance = self.utterance
         fields = self.fields
         # Get the DOM
-        dom_graph = await self.wob_dom()
+        dom_info = await self.wob_dom()
         logs = await self.get_js_logs()
-        state = MiniWoBGraphState(utterance, fields, dom_graph, None, logs)
+        state = MiniWoBGraphState(utterance, fields, dom_info, None, logs)
         return state
 
-    async def wob_dom(self) -> nx.DiGraph:
+    async def wob_dom(self) -> DomInfo:
         dom_info = await self.run_script("return core.getDOMInfo();")
-        ret = json_to_graph(dom_info)
-        return ret
+        return DomInfo(**dom_info)
 
     async def get_metadata(self) -> dict:
         reward = 0.0

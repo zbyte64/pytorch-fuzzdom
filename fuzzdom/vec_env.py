@@ -18,7 +18,7 @@ import scipy.spatial
 import random
 
 from .domx import short_embed
-from .state import MiniWoBGraphState
+from .state import MiniWoBGraphState, DomInfo
 from .data import vectorize_projections, from_networkx, SubData, broadcast_edges
 
 
@@ -109,11 +109,11 @@ def chomp_leaves(leaves, k=20, **kwargs):
 
 
 def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
-    e_dom, max_depth = encode_dom_graph(graph_state.dom_graph)
-    assert len(e_dom), str(graph_state.dom_graph)
+    dom_data, leaves, max_depth = encode_dom_info(graph_state.dom_info)
+    assert dom_data.num_nodes, str(graph_state.dom_info)
     e_fields = encode_fields(graph_state.fields)
 
-    dom_data, fields_data = map(from_networkx, [e_dom, e_fields])
+    fields_data = from_networkx(e_fields)
     # prefix dom data edges and attributes with `dom` and `spatial`
     dom_data = DOM_TRANSFORMER(dom_data)
     dom_data.dom_edge_index = dom_data.edge_index
@@ -150,11 +150,9 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
         "br_dom_edge_index",
     )
     leaves = filter_leaves(
-        get_dom_leaves(e_dom),
-        dom=dom_data,
-        field=fields_data,
-        dom_field=fields_projection_data,
+        leaves, dom=dom_data, field=fields_data, dom_field=fields_projection_data,
     )
+    assert leaves
     leaves_data = vectorize_projections(
         {"leaf": list({"dom_idx": i} for i in leaves)},
         dom_data,
@@ -179,11 +177,8 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
             "ux_action": [
                 {"action_idx": i, "action_one_hot": one_hot(i, 4)} for i in range(4)
             ],
-            "field": [{"field_idx": i} for i in e_fields.nodes],
-            "leaf": [
-                {"dom_idx": torch.tensor(e_dom.nodes[i]["dom_idx"], dtype=torch.int64)}
-                for i in leaves
-            ],
+            "field": [{"field_idx": i} for i in e_fields.nodes.keys()],
+            "leaf": [{"dom_idx": torch.tensor(i, dtype=torch.int64)} for i in leaves],
         },
         dom_data,
         source_domain="dom",
@@ -245,25 +240,21 @@ def encode_fields(fields):
     return o
 
 
-def get_dom_leaves(source: nx.DiGraph):
-    # 1 out connection because self connected
-    return list(filter(lambda n: source.out_degree(n) == 1, source.nodes))
-
-
 RADIO_VALUES = {True: 1.0, False: -1.0}
 
 
-def encode_dom_graph(g: nx.DiGraph, encode_with=None):
-    assert len(g)
-    numeric_map = {}
-    o = nx.DiGraph()
+def encode_dom_info(g: DomInfo, encode_with=None):
+    assert len(g.nodes)
+    o = defaultdict(list)
+    edges = list(map(torch.tensor, g.edges))
+    leaves = []
     if encode_with is None:
-        max_width = max([g.nodes[n]["width"] for n in g] + [1.0])
-        max_height = max([g.nodes[n]["height"] for n in g] + [1.0])
-        max_y = max([g.nodes[n]["top"] for n in g] + [1.0])
-        max_x = max([g.nodes[n]["left"] for n in g] + [1.0])
-        max_ry = max([abs(g.nodes[n]["ry"]) for n in g] + [1.0])
-        max_rx = max([abs(g.nodes[n]["rx"]) for n in g] + [1.0])
+        max_width = max([n["width"] for n in g.nodes] + [1.0])
+        max_height = max([n["height"] for n in g.nodes] + [1.0])
+        max_y = max([n["top"] for n in g.nodes] + [1.0])
+        max_x = max([n["left"] for n in g.nodes] + [1.0])
+        max_ry = max([abs(n["ry"]) for n in g.nodes] + [1.0])
+        max_rx = max([abs(n["rx"]) for n in g.nodes] + [1.0])
         encode_with = {
             "text": short_embed,
             "value": short_embed,
@@ -277,28 +268,31 @@ def encode_dom_graph(g: nx.DiGraph, encode_with=None):
             "left": tuplize(lambda x: minmax_scale(x, 0, max_x)),
             "focused": tuplize(lambda x: 1.0 if x else 0.0),
         }
-    d = nx.shortest_path_length(g, list(g.nodes)[0])
-    max_depth = max(d.values()) + 1
-    for i, (node, node_data) in enumerate(g.nodes(data=True)):
-        encoded_data = dict()
+    max_depth = max([n.get("depth", 0) for n in g.nodes] + [1])
+    for i, node_data in enumerate(g.nodes):
         for key, f in encode_with.items():
-            encoded_data[key] = f(node_data.get(key))
-        encoded_data["index"] = i
-        encoded_data["dom_idx"] = (i,)
-        encoded_data["radio_value"] = (RADIO_VALUES.get(node_data.get("value"), 0.0),)
-        encoded_data["depth"] = ((d.get(node, 0) + 1) / max_depth,)
-        encoded_data["pos"] = (
-            encoded_data["rx"][0] + encoded_data["width"][0] / 2,
-            encoded_data["ry"][0] + encoded_data["height"][0] / 2,
-            encoded_data["depth"][0],
+            o[key].append(f(node_data.get(key)))
+        o["index"].append(i)
+        o["dom_idx"].append((i,))
+        o["dom_ref"].append((node_data["ref"],))
+        o["radio_value"].append((RADIO_VALUES.get(node_data.get("value"), 0.0),))
+        o["depth"].append(((node_data.get("depth", 0) + 1) / max_depth,))
+        o["pos"].append(
+            (
+                o["rx"][-1][0] + o["width"][-1][0] / 2,
+                o["ry"][-1][0] + o["height"][-1][0] / 2,
+                o["depth"][-1][0],
+            )
         )
-        o.add_node(i, **encoded_data)
-        numeric_map[node] = i
         # add self loop
-        o.add_edge(i, i)
-    for u, v in g.edges:
-        o.add_edge(numeric_map[u], numeric_map[v])
-    return o, max_depth
+        edges.append(torch.tensor([i, i]))
+        if node_data.get("n_children", 0) == 0:
+            leaves.append(i)
+    data = Data(
+        edge_index=torch.stack(edges).view(-1, 2).transpose(1, 0),
+        **{k: torch.tensor(v) for k, v in o.items()}
+    )
+    return data, leaves, max_depth
 
 
 class ReceiptsGymWrapper(gym.ObservationWrapper):
@@ -341,7 +335,7 @@ class GraphGymWrapper(gym.Wrapper):
         action_id = selected_targets["action_idx"]
         field_idx = selected_targets["field_idx"]
         dom_idx = selected_targets["dom_idx"]
-        dom_ref = list(self.last_state.dom_graph.nodes)[dom_idx]
+        dom_ref = self.last_state.dom_info.nodes[dom_idx]["ref"]
         field_value = list(self.last_state.fields.values)[field_idx]
         assert isinstance(field_value, str), str(self.last_state.fields)
         return (action_id, dom_ref, field_value)

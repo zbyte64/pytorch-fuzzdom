@@ -736,16 +736,16 @@ class Instructor(GNNBase):
             nn.Sequential(
                 init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
                 nn.ReLU(),
-                init_xn(nn.Linear(self.text_embed_size, 1)),
-                # nn.ReLU(),
+                init_xn(nn.Linear(self.text_embed_size, 1), "relu"),
+                nn.ReLU(),
             )
         )
         self.query_fn = GlobalAttention(
             nn.Sequential(
                 init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
                 nn.ReLU(),
-                init_xn(nn.Linear(self.text_embed_size, 1)),
-                # nn.ReLU(),
+                init_xn(nn.Linear(self.text_embed_size, 1), "relu"),
+                nn.ReLU(),
             )
         )
         from .domx import short_embed
@@ -766,14 +766,14 @@ class Instructor(GNNBase):
         self.key_softmax_fn = nn.Sequential(
             init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
             nn.ReLU(),
-            init_xn(nn.Linear(self.text_embed_size, self.key_selection_size), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(self.text_embed_size, self.key_selection_size)),
+            # nn.ReLU(),
         )
         self.query_softmax_fn = nn.Sequential(
             init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
             nn.ReLU(),
-            init_xn(nn.Linear(self.text_embed_size, 4), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(self.text_embed_size, 4)),
+            # nn.ReLU(),
         )
 
     def field(self, dom, _field, full_x):
@@ -781,9 +781,10 @@ class Instructor(GNNBase):
         device = full_x.device
         # tag and classes already included in the front
         fuller_x = torch.cat([dom.text, dom.value, full_x], dim=1)
-        key_softmax = F.softmax(
-            global_add_pool(self.key_softmax_fn(fuller_x), dom.batch), dim=1
-        ).repeat_interleave(self.text_embed_size, dim=1)
+        key_softmax_x = global_max_pool(self.key_softmax_fn(fuller_x), dom.batch)
+        key_softmax = F.softmax(key_softmax_x, dim=1).repeat_interleave(
+            self.text_embed_size, dim=1
+        )
         key = self.key_fn(fuller_x, dom.batch)[:, : self.text_embed_size * 4]
         key = torch.cat(
             [key, self.other_values.to(device).repeat(batch_size, 1)], dim=1
@@ -797,9 +798,10 @@ class Instructor(GNNBase):
         assert _field.key.shape == _field.query.shape, str(
             (_field.key.shape, _field.query.shape)
         )
-        query_softmax = F.softmax(
-            global_add_pool(self.query_softmax_fn(fuller_x), dom.batch), dim=1
-        ).repeat_interleave(self.text_embed_size, dim=1)
+        query_softmax_x = global_max_pool(self.query_softmax_fn(fuller_x), dom.batch)
+        query_softmax = F.softmax(query_softmax_x, dim=1).repeat_interleave(
+            self.text_embed_size, dim=1
+        )
         query = self.query_fn(fuller_x, dom.batch)[:, : self.text_embed_size * 4]
         _field.query = (
             (query * query_softmax).view(batch_size, self.text_embed_size, 4).sum(dim=2)
@@ -809,6 +811,7 @@ class Instructor(GNNBase):
                 _field.query.clone().detach().requires_grad_(False).max().min().item()
                 <= 0
             ):
+                print(query_softmax_x)
                 print(query_softmax)
                 print(query)
                 print(_field.query)

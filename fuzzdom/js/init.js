@@ -1,38 +1,60 @@
 var IGNORE_TAGS = { SCRIPT: 1, STYLE: 1, META: 1, NOSCRIPT: 1 };
-function loop(node, p) {
+var DOM_COUNTER = 0
+function loop(domInfo, node, depth, p) {
   // return visible nodes
-  if (!node.nodeName || node.hidden || IGNORE_TAGS[node.nodeName]) {
+  if (!node.nodeName || !node.click || node.hidden || IGNORE_TAGS[node.nodeName]) {
     return;
   }
   if (node.scrollHeight === 0 && node.scrollWidith === 0) {
     return;
   }
+  let d = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+  if (!d) {
+    return;
+  }
+  if (node._ref === undefined) {
+    node._ref = DOM_COUNTER;
+    DOM_COUNTER += 1;
+  }
   let node_def = {
-    t: node.nodeName,
-    v: node.nodeValue || "",
-    a: { id: node.id },
-    c: [],
-    r: p,
-    d: node.getBoundingClientRect ? node.getBoundingClientRect() : null,
-    f: node === document.activeElement
+    ref: node._ref,
+    tag: node.nodeName,
+    value: node.nodeValue || "",
+    text: "",
+    focused: node === document.activeElement,
+    classes: node.className,
+    rx: d.left - p && p.left || 0,
+    ry: d.top - p && p.top || 0,
+    height: d.height,
+    width: d.width,
+    top: d.top,
+    left: d.left,
+    depth: depth,
+    tampered: node._tampered === true,
+    n_children: 0,
   };
-  if (node.attributes) {
-    for (var i = 0; i < node.attributes.length; i++) {
-      node_def.a[node.attributes[i].name] = node.attributes[i].value;
-    }
+  if (node.type) {
+    node_def.tag = node_def.tag + "_" + node.type;
+  } else if (node.hasAttribute("role")) {
+    node_def.tag = node_def.tag + "_" + node.getAttribute("role");
   }
   if (node instanceof HTMLInputElement) {
     var inputType = node.type;
     if (inputType === "checkbox" || inputType === "radio") {
-      node_def.v = node.checked;
+      node_def.value = node.checked;
     } else {
-      node_def.v = node.value;
+      node_def.value = node.value;
     }
   } else if (node instanceof HTMLTextAreaElement) {
-    node_def.v = node.value;
+    node_def.value = node.value;
+  } else if (node.hasAttribute('aria-checked')) {
+    node_def.value = node.getAttribute('aria-checked')
   }
+
+  var index = domInfo.nodes.push(node_def) - 1;
+  domInfo.elements[node_def['ref']] = node;
+
   var nodes = node.childNodes || [];
-  var ci = 0;
   var hasText = "";
   for (var i = 0; i < nodes.length; i++) {
     let n = nodes[i];
@@ -42,28 +64,55 @@ function loop(node, p) {
     if (n.nodeName === "#text") {
       hasText += n.nodeValue;
     } else if (n.childNodes.length > 0) {
-      let c = loop(n, ci.toString());
-      if (c) node_def.c.push(c);
-      ci += 1;
+      //only care if the node itself has text as well
+      let c = loop(domInfo, n, depth+1, d);
+      if (c !== undefined) {
+        domInfo.edges.push([index, c])
+        node_def.n_children += 1;
+      }
     }
   }
   hasText = hasText.trim().length > 0;
   if (hasText) {
-    node_def.v = node.innerText;
+    node_def.text = node.innerText;
+  } else if (node_def.n_children === 0) {
+    node_def.text = node.innerText;
   }
-  return node_def;
+  ['aria-label', 'alt', 'label', 'placeholder', 'title'].map(function(x) {
+    if (node.hasAttribute(x)) node_def.text += " " + node.getAttribute(x) ;
+  });
+  return index;
 }
 
 window.core = {
   elementClick: function(element) {
-    if (typeof element === "string") {
-      element = document.querySelector(element);
+    if (typeof element === "string" || typeof element === "number") {
+      element = window.core.previousDOMInfo[element];
     }
+    if (element) element._tampered = true;
     return element && element.click && (element.click() || true);
   },
+  elementType: function(element, text) {
+    if (typeof element === "string" || typeof element === "number") {
+      element = window.core.previousDOMInfo[element];
+    }
+    if (element) {
+      element._tampered = true;
+      element.click()
+      element.focus()
+      element.value = text;
+      return true;
+    }
+  },
   getDOMInfo: function() {
-    window.core.previousDOMInfo = loop(document.body, "html");
-    return window.core.previousDOMInfo;
+    var domInfo = {
+      nodes: [],
+      edges: [],
+      elements: {},
+    };
+    loop(domInfo, document.body, 0);
+    window.core.previousDOMInfo = domInfo.elements;
+    return {'nodes': domInfo.nodes, 'edges': domInfo.edges};
   },
   logs: {},
   getLogs: function() {

@@ -1,6 +1,7 @@
 from PIL import Image
 from copy import copy
 import networkx as nx
+from collections import namedtuple
 
 from miniwob.fields import Fields, get_field_extractor
 
@@ -19,6 +20,9 @@ def fields_factory(task, utterance):
     return fields
 
 
+DomInfo = namedtuple("DomInfo", ["nodes", "edges"])
+
+
 class MiniWoBGraphState(object):
     """MiniWoB Graph state.
     """
@@ -27,29 +31,23 @@ class MiniWoBGraphState(object):
         self,
         utterance: str,
         fields: Fields,
-        dom_graph: nx.DiGraph,
+        dom_info: DomInfo,
         screenshot: Image,
         logs: dict,
     ):
-        assert isinstance(dom_graph, nx.DiGraph)
-        assert len(dom_graph)
+        assert isinstance(dom_info, DomInfo)
+        assert len(dom_info.nodes)
         self.utterance = utterance
         self.fields = fields
-        self.dom_graph = dom_graph
+        self.dom_info = dom_info
         self.logs = logs
         if screenshot:
-            add_image_slices_to_graph(self.dom_graph, screenshot)
+            add_image_slices_to_graph(self.dom_info, screenshot)
         self.screenshot = screenshot
         self.clipboard_text = ""
-        """
-        print(self.dom_nodes)
-        print(self.dom_node_to_idx)
-        for node in self.dom_nodes:
-            print(node, list(self.dom_graph.successors(node)))
-        """
 
     def copy_node_text(self, ref):
         self = copy(self)
-        node_info = self.dom_graph.nodes[ref]
+        node_info = next(filter(lambda x: x["ref"] == ref, self.dom_info.nodes))
         self.clipboard_text = node_info.get("text", "")
         return self
