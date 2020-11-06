@@ -154,6 +154,9 @@ def get_args():
     )
     parser.add_argument("--load-model", default=None, help="path to initial model")
     parser.add_argument(
+        "--load-autoencoder", default=None, help="path to pretrained autoencoder model"
+    )
+    parser.add_argument(
         "--no-cuda", action="store_true", default=False, help="disables CUDA training"
     )
     parser.add_argument(

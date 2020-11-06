@@ -61,7 +61,7 @@ def envs(args, receipts):
         tasks = [[task]]
     print("Selected tasks:", tasks)
     envs = make_vec_envs(
-        [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts,
+        [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts
     )
     return envs
 
@@ -78,8 +78,8 @@ def device(args):
 
 
 def autoencoder(args, text_embed_size, encoder_size, autoencoder_size):
-    if os.path.exists("./datadir/autoencoder.pt"):
-        return torch.load("./datadir/autoencoder.pt")
+    if args.load_autoencoder:
+        return torch.load(args.load_autoencoder)
     return GAE(Encoder("GAE", autoencoder_size, encoder_size))
 
 
@@ -96,7 +96,7 @@ def actor_critic(args, device, receipts, dom_encoder, actor_critic_base):
         (args.num_processes,),
         gym.spaces.Discrete(1),  # envs.action_space,
         base=actor_critic_base,
-        base_kwargs={"dom_encoder": dom_encoder, "recurrent": args.recurrent_policy,},
+        base_kwargs={"dom_encoder": dom_encoder, "recurrent": args.recurrent_policy},
         receipts=receipts,
     )
     if args.load_model:
@@ -177,7 +177,7 @@ def start(envs, rollouts, device):
 
 
 def run_episode(
-    args, envs, rollouts, actor_critic, agent, j, num_updates, last_action_time, obs,
+    args, envs, rollouts, actor_critic, agent, j, num_updates, last_action_time, obs
 ):
     episode_rewards = deque(maxlen=args.num_steps * args.num_processes)
     rewards = deque(maxlen=args.num_steps * args.num_processes)
@@ -253,7 +253,7 @@ def run_episode(
 def optimize(args, actor_critic, agent, rollouts):
     with torch.no_grad():
         next_value = actor_critic.get_value(
-            rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1],
+            rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1]
         ).detach()
 
     rollouts.compute_returns(

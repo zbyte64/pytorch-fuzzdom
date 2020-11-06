@@ -1,0 +1,73 @@
+version: "3"
+services:
+  app:
+    build: .
+    image: fuzzdom
+    # for CUDA access
+    ipc: "host"
+    environment:
+      SELENIUM_URL: http://selenium:4444/wd/hub
+      PROXY_HOST: squidproxy:3128
+    links:
+      - selenium
+      - squidproxy
+      - video
+    volumes:
+      - ./fuzzdom:/code/fuzzdom
+      - ./tmp:/tmp
+      - miniwob-volume:/root/.cache
+      - ./datadir:/code/datadir
+      - ./trained_models:/code/trained_models
+      - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob
+    entrypoint: python -m fuzzdom.train.rdncrawl --num-processes=1 --num-steps=32 --log-interval=1 --algo=ppo
+    command: --env-name=http://192.168.0.1:8080/
+  selenium:
+    image: selenium/standalone-chrome
+    volumes:
+      - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob:ro
+      - ./fuzzdom:/code/fuzzom
+      - /dev/shm:/dev/shm
+      - displays:/tmp/.X11-unix:rw
+    ports:
+      - 4444:4444
+    links:
+      - squidproxy
+    environment:
+      proxy_type: manual
+      http_proxy: http://squidproxy:3128
+      ssl_proxy: http://squidproxy:3128
+      socks_proxy: http://squidproxy:3128
+      ftp_proxy: http://squidproxy:3128
+      JAVA_OPTS: -Dwebdriver.chrome.whitelistedIps=
+      SE_OPTS: -debug
+      START_XVFB: "true"
+  video:
+    image: selenium/video:ffmpeg-4.3.1-20201009
+    volumes:
+      - ./tmp/videos:/videos
+      - /dev/shm:/dev/shm
+      - displays:/tmp/.X11-unix:rw
+    links:
+      - selenium
+    environment:
+      #DISPLAY_CONTAINER_NAME: selenium
+      FILE_NAME: video.mp4
+  squidproxy:
+    image: sameersbn/squid:3.5.27-2
+    restart: always
+    volumes:
+      - /srv/docker/squid/cache:/var/spool/squid
+      - ./squid.conf:/etc/squid/squid.conf
+    ports:
+      - 3128:3128
+  testsite:
+    image: nginx
+    volumes:
+      - ./fuzzdom/testsite:/usr/share/nginx/html
+    ports:
+      - 8080:80
+volumes:
+  miniwob-volume:
+    driver: local
+  displays:
+    driver: local
