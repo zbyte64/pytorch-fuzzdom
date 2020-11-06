@@ -129,35 +129,38 @@ def optimize(
     )
     value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
-    # TODO lookup batch size
-    mini_batch_size = 16
+    mini_batch_size = args.num_mini_batch
     sampler = BatchSampler(
         SubsetRandomSampler(rollouts.obs.flatten().tolist()),
         mini_batch_size,
         drop_last=True,
     )
-    autoencoder_subset = None
+
     rdn_scorer.train()
     rdn_optimizer.zero_grad()
+    autoencoder.train()
+    autoencoder_optimizer.zero_grad()
+    autoencoder_loss = None
+    ae_values = list()
+    rdn_values = list()
+
     for subset in sampler:
-        if autoencoder_subset is None:
-            autoencoder_subset = subset
         ds = receipts.redeem(torch.tensor(subset))
         dom = ds[0]
         logs = ds[-1]
         # train rdn_scorer
-        rdn_loss = rdn_scorer.loss(dom, logs)
+        rdn_loss, rdn_scores = rdn_scorer.loss(dom, logs)
         rdn_loss.backward()
-    rdn_optimizer.step()
-    rdn_scorer.eval()
+        rdn_values.append(rdn_scores)
 
-    autoencoder_loss = None
-    if autoencoder_subset is not None:
         # train autoencoder
-        autoencoder.train()
-        autoencoder_optimizer.zero_grad()
-        seen_values = list()
-        for i in autoencoder_subset:
+        if len(ae_values) >= mini_batch_size * 2:
+            continue
+
+        for i, rdn_score in zip(subset, rdn_scores.flatten().tolist()):
+            # not ineresting: skip if rdn score is below average
+            if rdn_score < (rdn_scorer.score_normalizer.mean or 0):
+                continue
             data = receipts[i][0]
             del data.batch
             data.edge_index = data.dom_edge_index
@@ -171,11 +174,15 @@ def optimize(
             z = autoencoder.encode(x, data.edge_index)
             autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
             autoencoder_loss.backward()
-            seen_values.append(autoencoder_loss.clone().detach().view(1))
-        autoencoder_optimizer.step()
-        autoencoder.eval()
-        if len(seen_values) > 5:
-            autoencoder_score_norm.update(torch.cat(seen_values))
+            ae_values.append(autoencoder_loss.clone().detach().view(1))
+    autoencoder_optimizer.step()
+    autoencoder.eval()
+
+    rdn_optimizer.step()
+    rdn_scorer.eval()
+    rdn_scorer.score_normalizer.update(torch.cat(rdn_values))
+    if len(ae_values) >= mini_batch_size:
+        autoencoder_score_norm.update(torch.cat(ae_values))
 
     filter_leaves.actor_critic.load_state_dict(actor_critic.state_dict())
 

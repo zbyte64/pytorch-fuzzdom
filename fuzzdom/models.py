@@ -89,9 +89,11 @@ class DirectionalPropagation(ResolveMixin, nn.Module):
         return dom_mask
 
     def forward(self, x, dom, projection, mask):
-        self.start_resolve({"x": x, "dom": dom, "mask": mask, "projection": projection})
-        pos_mask = self.resolve_value(self.spatial_mask)
-        dom_mask = self.resolve_value(self.dom_mask)
+        r = self.start_resolve(
+            {"x": x, "dom": dom, "mask": mask, "projection": projection}
+        )
+        pos_mask = r["spatial_mask"]
+        dom_mask = r["dom_mask"]
         return torch.max(mask, torch.max(pos_mask, dom_mask))
 
 
@@ -705,7 +707,7 @@ class GNNBase(ResolveMixin, NNBase):
         assert all(map(lambda x: isinstance(x, Batch), inputs))
         dom, objectives, objectives_projection, leaves, actions, *history = inputs
         assert actions.edge_index is not None, str(inputs)
-        self.start_resolve(
+        r = self.start_resolve(
             {
                 "dom": dom,
                 "field": objectives,
@@ -718,12 +720,9 @@ class GNNBase(ResolveMixin, NNBase):
         )
 
         return (
-            self.resolve_value(self.critic_value),
-            (
-                self.resolve_value(self.action_votes),
-                self.resolve_value(self.action_batch_idx),
-            ),
-            self.resolve_value(lambda rnn_hxs: rnn_hxs),
+            r["critic_value"],
+            (r["action_votes"], r["action_batch_idx"]),
+            r["rnn_hxs"],
         )
 
 

@@ -30,10 +30,7 @@ class NormalizeScore:
 
     def update(self, scores):
         with torch.no_grad():
-            if self.shift_mean:
-                mean = scores.mean()
-            else:
-                mean = 0
+            mean = scores.mean()
             std_dev = scores.std()
             if self.std_dev is None:
                 self.std_dev = std_dev
@@ -102,16 +99,15 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
         )
 
     def score(self, dom, logs):
-        self.start_resolve({"dom": dom, "logs": logs})
-        scores = self.resolve_value(self.raw_score)
+        r = self.start_resolve({"dom": dom, "logs": logs})
+        scores = r(self.raw_score)
         return self.score_normalizer.scale(scores)
 
     def loss(self, dom, logs):
-        self.start_resolve({"dom": dom, "logs": logs})
-        scores = self.resolve_value(self.raw_score)
-        self.score_normalizer.update(scores)
+        r = self.start_resolve({"dom": dom, "logs": logs})
+        scores = r(self.raw_score)
         loss = scores.mean()
-        return loss
+        return loss, scores.detach()
 
 
 class RDNScorerGymWrapper(gym.Wrapper):

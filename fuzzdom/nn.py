@@ -13,6 +13,7 @@ from .factory_resolver import FactoryResolver
 class ResolveMixin:
     def start_resolve(self, params):
         self._last_values = FactoryResolver(self, **params)
+        return self._last_values
 
     def export_value(self, key, value):
         self._last_values[key] = value
