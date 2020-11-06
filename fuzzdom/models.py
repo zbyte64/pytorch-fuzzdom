@@ -766,13 +766,11 @@ class Instructor(GNNBase):
             init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(self.text_embed_size, self.key_selection_size)),
-            # nn.ReLU(),
         )
         self.query_softmax_fn = nn.Sequential(
             init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(self.text_embed_size, 4)),
-            # nn.ReLU(),
         )
 
     def field(self, dom, _field, full_x):
