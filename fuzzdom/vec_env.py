@@ -267,6 +267,7 @@ def encode_dom_info(g: DomInfo, encode_with=None):
             "top": tuplize(lambda x: minmax_scale(x, 0, max_y)),
             "left": tuplize(lambda x: minmax_scale(x, 0, max_x)),
             "focused": tuplize(lambda x: 1.0 if x else 0.0),
+            "tampered": tuplize(lambda x: 1.0 if x else 0.0),
         }
     max_depth = max([n.get("depth", 0) for n in g.nodes] + [1])
     for i, node_data in enumerate(g.nodes):

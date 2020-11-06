@@ -72,7 +72,7 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
             )
         )
         self.score_normalizer = NormalizeScore(
-            shift_mean=False, scale_by=0.5, clamp_by=(0, 2)
+            shift_mean=False, scale_by=0.75, clamp_by=(0, 0.75)
         )
 
     def x(self, dom):

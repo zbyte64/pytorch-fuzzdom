@@ -44,13 +44,11 @@ class ModelBasedLeafFilter:
 
 
 def autoencoder_score_norm():
-    return NormalizeScore(scale_by=1e-2)
+    return NormalizeScore(scale_by=0.25, clamp_by=(0, 0.25))
 
 
-def rdn_scorer(device, text_embed_size, encoder_size):
-    in_size = text_embed_size * 4 + 9
-    out_size = encoder_size
-    return RDNScorer(in_size, out_size).to(device).eval()
+def rdn_scorer(device, text_embed_size, autoencoder_size, encoder_size):
+    return RDNScorer(autoencoder_size, encoder_size).to(device).eval()
 
 
 def filter_leaves(actor_critic):

@@ -166,7 +166,6 @@ def autoencoder_x(dom):
             dom.height,
             dom.top,
             dom.left,
-            dom.focused,
             dom.depth,
         ],
         dim=1,
@@ -197,7 +196,7 @@ class GNNBase(ResolveMixin, NNBase):
         self.dom_encoder = dom_encoder
 
         action_one_hot_size = 4  # 5 to enable wait
-        query_input_dim = 9 + 2 * text_embed_size
+        query_input_dim = 10 + 2 * text_embed_size
         if dom_encoder:
             query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
@@ -339,6 +338,7 @@ class GNNBase(ResolveMixin, NNBase):
                 dom.top,
                 dom.left,
                 dom.focused,
+                dom.tampered,
                 dom.depth,
             ],
             dim=1,

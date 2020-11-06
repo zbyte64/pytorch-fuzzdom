@@ -29,6 +29,7 @@ from fuzzdom.replay import ReplayRepository
 
 text_embed_size = 25
 encoder_size = 25
+autoencoder_size = text_embed_size * 4 + 8
 
 
 def args():
@@ -76,12 +77,10 @@ def device(args):
     return torch.device("cuda:0" if args.cuda else "cpu")
 
 
-def autoencoder(args, text_embed_size, encoder_size):
+def autoencoder(args, text_embed_size, encoder_size, autoencoder_size):
     if os.path.exists("./datadir/autoencoder.pt"):
         return torch.load("./datadir/autoencoder.pt")
-    in_size = text_embed_size * 4 + 9
-    out_size = encoder_size
-    return GAE(Encoder("GAE", in_size, out_size))
+    return GAE(Encoder("GAE", autoencoder_size, encoder_size))
 
 
 def dom_encoder(autoencoder):
