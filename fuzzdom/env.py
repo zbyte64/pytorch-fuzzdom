@@ -468,6 +468,11 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
             "reason": reason,
         }
 
+    async def async_step(self, action) -> tuple:
+        await self.wait_for_dom()
+        await self._web._injection_check()
+        return await super().async_step(action)
+
 
 class CrawlTaskEnvironment(CustomTaskEnvironment):
     """

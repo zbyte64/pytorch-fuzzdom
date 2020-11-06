@@ -71,7 +71,7 @@ def envs(
 
     def make_env():
         env = CrawlTaskEnvironment(
-            wait_ms=500, start_url=start_url, valid_url=valid_url,
+            wait_ms=500, start_url=start_url, valid_url=valid_url
         )
         return env
 
@@ -117,7 +117,7 @@ def optimize(
     print("optimizing rdn")
     with torch.no_grad():
         next_value = actor_critic.get_value(
-            rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1],
+            rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1]
         ).detach()
 
     rollouts.compute_returns(
@@ -154,9 +154,6 @@ def optimize(
         rdn_values.append(rdn_scores)
 
         # train autoencoder
-        if len(ae_values) >= mini_batch_size * 2:
-            continue
-
         for i, rdn_score in zip(subset, rdn_scores.flatten().tolist()):
             # not ineresting: skip if rdn score is below average
             if rdn_score < (rdn_scorer.score_normalizer.mean or 0):
