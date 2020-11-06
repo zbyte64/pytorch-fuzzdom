@@ -54,12 +54,11 @@ set_arsenic_log_level()
 async def open_driver(capabilities={"browserName": "chrome"}):
     if "SELENIUM_URL" in os.environ:
         driver = await start_session(
-            services.Remote(os.getenv("SELENIUM_URL")),
-            browsers.Browser(**capabilities),
+            services.Remote(os.getenv("SELENIUM_URL")), browsers.Browser(**capabilities)
         )
     else:
         driver = await start_session(
-            services.Chromedriver(), browsers.Browser(**capabilities),
+            services.Chromedriver(), browsers.Browser(**capabilities)
         )
     return driver
 
@@ -76,8 +75,11 @@ class WebInterface:
     async def _injection_check(self):
         loaded = False
         if self._load_code:
-            loaded = await self._driver.execute_script(
-                f"document.body.dataset.{self._load_code}"
+            loaded = (
+                await self._driver.execute_script(
+                    f"return document.body.dataset.{self._load_code}"
+                )
+                is True
             )
         else:
             self._load_code = "".join(random.sample(string.ascii_letters, 8))
@@ -247,6 +249,7 @@ class MiniWoBGraphEnvironment(gym.Env):
     async def _injection_check(self):
         location = await self._web.location
         assert location["protocol"] != "chrome-error:"
+        await self._web._injection_check()
 
     async def get_js_logs(self):
         return await self.run_script("return core.getLogs();")
@@ -255,17 +258,7 @@ class MiniWoBGraphEnvironment(gym.Env):
         # updates with new state with refetched dom and image
         await self.wait_for_dom()
         await self._injection_check()
-        js_logs = await self.get_js_logs()
-        if any(js_logs.values()):
-            print("JS logs:")
-            print(js_logs)
-        self.state = MiniWoBGraphState(
-            self.state.utterance,
-            self.state.fields,
-            await self.wob_dom(),
-            None,  # await self._web.get_img(),
-            logs=js_logs,
-        )
+        self.state = await self.get_wob_state()
 
     def set_state(self, state):
         assert state
@@ -380,7 +373,7 @@ class MiniWoBGraphEnvironment(gym.Env):
         # Get the DOM
         dom_info = await self.wob_dom()
         img = None  # await self._web.get_img()
-        logs = await self.get_js_logs()
+        logs = {"errors": [], "log": []}
         state = MiniWoBGraphState(response, fields, dom_info, img, logs)
         return state
 
@@ -454,6 +447,9 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
         # Get the DOM
         dom_info = await self.wob_dom()
         logs = await self.get_js_logs()
+        if any(logs.values()):
+            print("JS logs:")
+            print(logs)
         state = MiniWoBGraphState(utterance, fields, dom_info, None, logs)
         return state
 
@@ -471,9 +467,6 @@ class CustomTaskEnvironment(MiniWoBGraphEnvironment):
             "raw_reward": reward,
             "reason": reason,
         }
-
-    async def _injection_check(self):
-        await self._web._injection_check()
 
 
 class CrawlTaskEnvironment(CustomTaskEnvironment):

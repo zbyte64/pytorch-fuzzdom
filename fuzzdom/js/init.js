@@ -84,7 +84,7 @@ function loop(domInfo, node, depth, p) {
   return index;
 }
 
-window.core = {
+window.core = Object.assign(window.core ? window.core : {}, {
   elementClick: function(element) {
     if (typeof element === "string" || typeof element === "number") {
       element = window.core.previousDOMInfo[element];
@@ -110,8 +110,8 @@ window.core = {
       edges: [],
       elements: {},
     };
-    loop(domInfo, document.body, 0);
     window.core.previousDOMInfo = domInfo.elements;
+    loop(domInfo, document.body, 0);
     return {'nodes': domInfo.nodes, 'edges': domInfo.edges};
   },
   logs: {},
@@ -121,7 +121,7 @@ window.core = {
     Object.keys(ret).map(function(x) {window.core.logs[x] = []})
     return ret;
   }
-};
+}, window.core);
 
 window.addEventListener('error', function(event) {
   window.core.logs['windowError'].push(event);

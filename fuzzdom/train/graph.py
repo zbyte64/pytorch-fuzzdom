@@ -51,7 +51,7 @@ def envs(args, receipts):
         levels=tasks,
         level_tracker=LevelTracker(tasks),
         wait_ms=500,
-        web_interface=ManagedWebInterface(proxy=os.getenv("PROXY_HOST")),
+        web_interface=ManagedWebInterface(),
     )
 
     task = args.env_name

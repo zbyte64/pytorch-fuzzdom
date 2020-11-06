@@ -27,7 +27,7 @@ services:
       - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob:ro
       - ./fuzzdom:/code/fuzzom
       - /dev/shm:/dev/shm
-      - displays:/tmp/.X11-unix:rw
+      - displays:/tmp:rw
     ports:
       - 4444:4444
     links:
@@ -43,10 +43,11 @@ services:
       START_XVFB: "true"
   video:
     image: selenium/video:ffmpeg-4.3.1-20201009
+    ipc: "host"
     volumes:
       - ./tmp/videos:/videos
       - /dev/shm:/dev/shm
-      - displays:/tmp/.X11-unix:rw
+      - displays:/tmp:rw
     links:
       - selenium
     environment:
