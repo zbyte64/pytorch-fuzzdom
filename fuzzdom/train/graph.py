@@ -102,7 +102,16 @@ def actor_critic(args, device, receipts, dom_encoder, actor_critic_base):
     if args.load_model:
         print("Loading previous model:", args.load_model)
         loaded_model = torch.load(args.load_model)
-        actor_critic.load_state_dict(loaded_model.state_dict())
+        # chomp state down from rdncrawl
+        new_state = loaded_model.state_dict()
+        cur_state = actor_critic.state_dict()
+        extra_keys = set(new_state.keys()) - set(cur_state.keys())
+        for key in extra_keys:
+            del new_state[key]
+        # merge up state to transfer to rdncrawl
+        cur_state.update(new_state)
+        actor_critic.load_state_dict(cur_state)
+
     actor_critic.to(device)
     actor_critic.train()
     return actor_critic
