@@ -280,8 +280,8 @@ def encode_dom_info(g: DomInfo, encode_with=None):
         list(map(tuplize(lambda x: RADIO_VALUES.get(x, 0.0)), g.value))
     )
     o["index"] = torch.arange(0, num_nodes)
-    o["dom_index"] = o["index"].view(-1, 1)
-    o["dom_ref"] = torch.tensor(g.ref)
+    o["dom_index"] = o["index"]
+    o["dom_ref"] = torch.tensor(g.ref).view(-1, 1)
     for i, (rx, ry, width, height, depth, n_children) in enumerate(
         zip(g.rx, g.ry, g.width, g.height, g.depth, g.n_children)
     ):
@@ -301,9 +301,9 @@ def encode_dom_info(g: DomInfo, encode_with=None):
             leaves.append(i)
     assert o["pos"], str(g)
     o["pos"] = torch.stack(o["pos"])
-    data = Data(
-        edge_index=torch.stack([torch.tensor(edges[0]), torch.tensor(edges[1])]), **o
-    )
+    o["edge_index"] = torch.stack([torch.tensor(edges[0]), torch.tensor(edges[1])])
+    data = SubData(o, index=num_nodes)
+    data.num_nodes = num_nodes
     return data, leaves, max_depth
 
 

@@ -206,8 +206,6 @@ class TupleBatch:
             ret.append(packed_sample)
             for source in samples:
                 assert isinstance(source, Data)
-                # why do we get floats?
-                source.edge_index = source.edge_index.type(torch.long)
                 packed_sample.append(source)
         return tuple(map(IndexedBatch.from_data_list, zip(*ret)))
 
@@ -215,13 +213,9 @@ class TupleBatch:
 class IndexedBatch(Batch):
     @classmethod
     def from_data_list(cls, data_list, follow_batch=[]):
-        batch = Batch.from_data_list(data_list)
-        cls.fix_batch_indices(batch)
-        return batch
-
-    @classmethod
-    def fix_batch_indices(cls, batch):
-        for key in list(batch.keys):
-            if key.endswith("index") and "edge_" not in key:
-                batch[key] = batch[key].view(-1)
+        try:
+            batch = Batch.from_data_list(data_list)
+        except:
+            print(data_list)
+            raise
         return batch
