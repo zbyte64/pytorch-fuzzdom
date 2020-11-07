@@ -4,6 +4,7 @@ from bpemb import BPEmb
 import numpy as np
 from PIL import Image
 import random
+from collections import defaultdict
 
 
 bpemb_en = BPEmb(lang="en", dim=25)
@@ -223,29 +224,51 @@ def miniwob_to_graph(d: dict) -> nx.DiGraph:
 
 
 def miniwob_to_dominfo(d: dict):
-    nodes = []
-    edges = []
+    from .state import DomInfo
 
-    def traverse(n, p=None):
+    o = {key: [] for key in DomInfo._fields}
+
+    def traverse(n, p=None, depth=0):
         assert "ref" in n
+        i = len(o["ref"])
         attrs = dict(n)
-        # random.shuffle(attrs["children"])
 
         attrs["ry"] = n["top"]
         attrs["rx"] = n["left"]
         if p:
             attrs["ry"] -= p["top"]
             attrs["rx"] -= p["left"]
-        i = len(nodes)
-        nodes.append(attrs)
-        edges.append((i, i))
-        for child in attrs["children"]:
-            c = traverse(child, n)
-            edges.append((i, c))
+        attrs["n_children"] = len(attrs.get("children", []))
+        attrs["depth"] = depth
+        for key in [
+            "n_children",
+            "rx",
+            "text",
+            "top",
+            "tag",
+            "ry",
+            "value",
+            "height",
+            "width",
+            "depth",
+            "classes",
+            "focused",
+            "tampered",
+            "ref",
+            "left",
+        ]:
+            value = attrs.get(key, None)
+            o[key].append(value)
+        o["row"].append(i)
+        o["col"].append(i)
+        for child in attrs.get("children", []):
+            c = traverse(child, n, depth + 1)
+            o["row"].append(i)
+            o["col"].append(c)
         return i
 
     traverse(d)
-    return {"nodes": nodes, "edges": edges}
+    return o
 
 
 def add_image_slices_to_graph(

@@ -242,7 +242,7 @@ class MiniWoBGraphEnvironment(gym.Env):
 
     async def wob_dom(self) -> DomInfo:
         dom_info = await self.run_script("return core.getDOMInfo();")
-        if "ref" in dom_info:
+        if "col" not in dom_info:
             dom_info = miniwob_to_dominfo(dom_info)
         return DomInfo(**dom_info)
 

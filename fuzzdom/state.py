@@ -20,7 +20,28 @@ def fields_factory(task, utterance):
     return fields
 
 
-DomInfo = namedtuple("DomInfo", ["nodes", "edges"])
+DomInfo = namedtuple(
+    "DomInfo",
+    [
+        "n_children",
+        "rx",
+        "text",
+        "top",
+        "tag",
+        "ry",
+        "value",
+        "height",
+        "width",
+        "depth",
+        "classes",
+        "focused",
+        "tampered",
+        "row",
+        "ref",
+        "col",
+        "left",
+    ],
+)
 
 
 class MiniWoBGraphState(object):
@@ -36,7 +57,7 @@ class MiniWoBGraphState(object):
         logs: dict,
     ):
         assert isinstance(dom_info, DomInfo)
-        assert len(dom_info.nodes)
+        assert len(dom_info.ref)
         self.utterance = utterance
         self.fields = fields
         self.dom_info = dom_info
@@ -48,6 +69,6 @@ class MiniWoBGraphState(object):
 
     def copy_node_text(self, ref):
         self = copy(self)
-        node_info = next(filter(lambda x: x["ref"] == ref, self.dom_info.nodes))
-        self.clipboard_text = node_info.get("text", "")
+        index = self.dom_info.ref.index(ref)
+        self.clipboard_text = self.dom_info.text[index]
         return self

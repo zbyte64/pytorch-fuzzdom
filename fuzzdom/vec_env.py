@@ -16,6 +16,7 @@ from collections import defaultdict
 import asyncio
 import scipy.spatial
 import random
+from itertools import chain
 
 from .domx import short_embed
 from .state import MiniWoBGraphState, DomInfo
@@ -150,7 +151,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
         "br_dom_edge_index",
     )
     leaves = filter_leaves(
-        leaves, dom=dom_data, field=fields_data, dom_field=fields_projection_data,
+        leaves, dom=dom_data, field=fields_data, dom_field=fields_projection_data
     )
     assert leaves
     leaves_data = vectorize_projections(
@@ -244,17 +245,20 @@ RADIO_VALUES = {True: 1.0, False: -1.0}
 
 
 def encode_dom_info(g: DomInfo, encode_with=None):
-    assert len(g.nodes)
-    o = defaultdict(list)
-    edges = list(map(torch.tensor, g.edges))
+    assert len(g.row)
+    o = {"pos": []}
+    edges = (g.row, g.col)
     leaves = []
+    num_nodes = len(g.ref)
+    assert num_nodes, str(g)
+    max_width = max(chain(g.width, [1.0]))
+    max_height = max(chain(g.height, [1.0]))
+    max_y = max(chain(g.top, [1.0]))
+    max_x = max(chain(g.left, [1.0]))
+    max_ry = max(chain(map(abs, g.ry), [1.0]))
+    max_rx = max(chain(map(abs, g.rx), [1.0]))
+    max_depth = max(chain(g.depth, [1]))
     if encode_with is None:
-        max_width = max([n["width"] for n in g.nodes] + [1.0])
-        max_height = max([n["height"] for n in g.nodes] + [1.0])
-        max_y = max([n["top"] for n in g.nodes] + [1.0])
-        max_x = max([n["left"] for n in g.nodes] + [1.0])
-        max_ry = max([abs(n["ry"]) for n in g.nodes] + [1.0])
-        max_rx = max([abs(n["rx"]) for n in g.nodes] + [1.0])
         encode_with = {
             "text": short_embed,
             "value": short_embed,
@@ -268,30 +272,37 @@ def encode_dom_info(g: DomInfo, encode_with=None):
             "left": tuplize(lambda x: minmax_scale(x, 0, max_x)),
             "focused": tuplize(lambda x: 1.0 if x else 0.0),
             "tampered": tuplize(lambda x: 1.0 if x else 0.0),
+            "depth": tuplize(lambda d: (d + 1) / max_depth),
         }
-    max_depth = max([n.get("depth", 0) for n in g.nodes] + [1])
-    for i, node_data in enumerate(g.nodes):
-        for key, f in encode_with.items():
-            o[key].append(f(node_data.get(key)))
-        o["index"].append(i)
-        o["dom_idx"].append((i,))
-        o["dom_ref"].append((node_data["ref"],))
-        o["radio_value"].append((RADIO_VALUES.get(node_data.get("value"), 0.0),))
-        o["depth"].append(((node_data.get("depth", 0) + 1) / max_depth,))
+    for key, f in encode_with.items():
+        o[key] = torch.tensor(list(map(f, getattr(g, key))))
+    o["radio_value"] = torch.tensor(
+        list(map(tuplize(lambda x: RADIO_VALUES.get(x, 0.0)), g.value))
+    )
+    o["index"] = torch.arange(0, num_nodes)
+    o["dom_index"] = o["index"].view(-1, 1)
+    o["dom_ref"] = torch.tensor(g.ref)
+    for i, (rx, ry, width, height, depth, n_children) in enumerate(
+        zip(g.rx, g.ry, g.width, g.height, g.depth, g.n_children)
+    ):
         o["pos"].append(
-            (
-                o["rx"][-1][0] + o["width"][-1][0] / 2,
-                o["ry"][-1][0] + o["height"][-1][0] / 2,
-                o["depth"][-1][0],
+            torch.tensor(
+                [
+                    (rx / max_rx + width / max_width) / 2,
+                    (ry / max_ry + height / max_height) / 2,
+                    depth,
+                ]
             )
         )
         # add self loop
-        edges.append(torch.tensor([i, i]))
-        if node_data.get("n_children", 0) == 0:
+        edges[0].append(i)
+        edges[1].append(i)
+        if n_children == 0:
             leaves.append(i)
+    assert o["pos"], str(g)
+    o["pos"] = torch.stack(o["pos"])
     data = Data(
-        edge_index=torch.stack(edges).view(-1, 2).transpose(1, 0),
-        **{k: torch.tensor(v) for k, v in o.items()}
+        edge_index=torch.stack([torch.tensor(edges[0]), torch.tensor(edges[1])]), **o
     )
     return data, leaves, max_depth
 
@@ -336,7 +347,7 @@ class GraphGymWrapper(gym.Wrapper):
         action_id = selected_targets["action_idx"]
         field_idx = selected_targets["field_idx"]
         dom_idx = selected_targets["dom_idx"]
-        dom_ref = self.last_state.dom_info.nodes[dom_idx]["ref"]
+        dom_ref = self.last_state.dom_info.ref[dom_idx]
         field_value = list(self.last_state.fields.values)[field_idx]
         assert isinstance(field_value, str), str(self.last_state.fields)
         return (action_id, dom_ref, field_value)
