@@ -328,7 +328,7 @@ class MiniWoBGraphEnvironment(gym.Env):
             metadata["episode"] = {"r": r}
         else:
             # wait for any remaining amount of time
-            wait_time = 0  # max(self.wait_ms / 1000 - time.time() - start_time, 0)
+            wait_time = max(self.wait_ms / 1000 - time.time() - start_time, 0)
             if wait_time:
                 await asyncio.sleep(wait_time)
         metadata["elapsed"] = max(0.0, time.time() - self.start_time)
