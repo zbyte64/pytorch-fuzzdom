@@ -120,7 +120,7 @@ class SoftActionDecoder(nn.Module):
             dim=2,
         )
         self.vote_fn = nn.Sequential(
-            init_ot(nn.Linear(action_size, action_size)), nn.Softmax(dim=1),
+            init_ot(nn.Linear(action_size, action_size)), nn.Softmax(dim=1)
         )
 
     def forward(self, embedded_words):
@@ -191,7 +191,7 @@ class GNNBase(ResolveMixin, NNBase):
         hidden_size=128,
         text_embed_size=25,
     ):
-        super(GNNBase, self).__init__(recurrent, hidden_size, hidden_size)
+        super().__init__(recurrent, hidden_size, hidden_size)
         self.hidden_size = hidden_size
         self.text_embed_size = text_embed_size
 
@@ -250,7 +250,7 @@ class GNNBase(ResolveMixin, NNBase):
             nn.Sigmoid(),
         )
         self.dom_disabled_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=1, K=5,
+            hidden_size, transitivity_size, mask_dim=1, K=5
         )
 
         self.objective_ux_action_fn = nn.Sequential(
@@ -263,7 +263,7 @@ class GNNBase(ResolveMixin, NNBase):
             # nn.Softmax(dim=1),
         )
         self.ux_action_needs_value_fn = nn.Sequential(
-            init_xn(nn.Linear(action_one_hot_size, 1), "sigmoid"), nn.Sigmoid(),
+            init_xn(nn.Linear(action_one_hot_size, 1), "sigmoid"), nn.Sigmoid()
         )
         self.dom_needs_value_fn = nn.Sequential(
             init_xn(nn.Linear(hidden_size, 8), "relu"),
@@ -278,7 +278,7 @@ class GNNBase(ResolveMixin, NNBase):
             nn.Sigmoid(),
         )
         self.dom_disabled_value_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=1, K=5,
+            hidden_size, transitivity_size, mask_dim=1, K=5
         )
         # has_value, order, is last, has focus, ux action
         objective_active_size = 4 + action_one_hot_size
@@ -305,17 +305,17 @@ class GNNBase(ResolveMixin, NNBase):
         self.trunk_norm = InstanceNorm(1)
         trunk_size = 3
         self.actor_gate = nn.Sequential(
-            init_ones(nn.Linear(trunk_size, 1), "relu"), nn.ReLU(),
+            init_ones(nn.Linear(trunk_size, 1), "relu"), nn.ReLU()
         )
 
         critic_embed_size = 16
         # ac norm, active, has value
         critic_size = 3
         self.critic_mp_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU(),
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
         )
         self.critic_ap_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU(),
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
         )
         critic_gate_size = (
             2 * critic_size + 1 * objective_active_size
@@ -351,7 +351,7 @@ class GNNBase(ResolveMixin, NNBase):
         if not self.dom_encoder:
             return None
         with torch.no_grad():
-            return torch.tanh(self.dom_encoder(autoencoder_x(dom), dom.dom_edge_index,))
+            return torch.tanh(self.dom_encoder(autoencoder_x(dom), dom.dom_edge_index))
 
     @domain("dom")
     def full_x(self, dom, x, encoded_x):
@@ -546,9 +546,7 @@ class GNNBase(ResolveMixin, NNBase):
         return 1 - self.dom_disabled_value_prop(full_x, dom, dom, dom_disabled)
 
     @domain("dom_field")
-    def value_mask(
-        self, dom, dom_field, full_x, dom_obj_int, dom_disabled_value_mask,
-    ):
+    def value_mask(self, dom, dom_field, full_x, dom_obj_int, dom_disabled_value_mask):
         """
         compute objective completeness with goal word similarities
         [0 - 1]
@@ -659,12 +657,10 @@ class GNNBase(ResolveMixin, NNBase):
         return softmax(self.active_fn(unpack_sequence(obj_active_seq)), field.batch)
 
     @domain("action_index")
-    def critic_trunk(
-        self, action, ac_norm, action_status_indicators, obj_active,
-    ):
+    def critic_trunk(self, action, ac_norm, action_status_indicators, obj_active):
         _obj_active = safe_bc(obj_active, action.field_index)
 
-        trunk = torch.cat([action_status_indicators, _obj_active, ac_norm,], dim=1,)
+        trunk = torch.cat([action_status_indicators, _obj_active, ac_norm], dim=1)
         return global_max_pool(trunk, action.action_index)
 
     @domain("action_index")
@@ -759,7 +755,7 @@ class Instructor(GNNBase):
             "paste",
         ]
         self.other_values = torch.cat(
-            list(map(lambda x: torch.from_numpy(short_embed(x)), self.target_words,))
+            list(map(lambda x: torch.from_numpy(short_embed(x)), self.target_words))
         ).view(1, -1)
         self.key_selection_size = len(self.target_words) + 4
         self.key_softmax_fn = nn.Sequential(

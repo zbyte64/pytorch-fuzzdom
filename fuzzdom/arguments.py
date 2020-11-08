@@ -153,7 +153,27 @@ def get_args():
         default="./trained_models/",
         help="directory to save agent models (default: ./trained_models)",
     )
-    parser.add_argument("--load-dir", help="directory to load agent models")
+    parser.add_argument(
+        "--load-dir", default="./trained_models/", help="directory to load agent models"
+    )
+    parser.add_argument(
+        "--load-autoencoder",
+        action="store_true",
+        default=False,
+        help="Load autoencoder from load directory",
+    )
+    parser.add_argument(
+        "--load-model",
+        action="store_true",
+        default=False,
+        help="Load entire model from load directory",
+    )
+    parser.add_argument(
+        "--load-actor",
+        action="store_true",
+        default=False,
+        help="Load just the actor from load directory (drop critic weights)",
+    )
     parser.add_argument(
         "--no-cuda", action="store_true", default=False, help="disables CUDA training"
     )
@@ -178,10 +198,10 @@ def get_args():
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
-    args.load_model = os.path.join(args.load_dir, "agent.pt") if args.load_dir else None
-    args.load_autoencoder = (
-        os.path.join(args.load_dir, "autoencoder.pt") if args.load_dir else None
-    )
+    if args.load_autoencoder is True:
+        args.load_autoencoder = os.path.join(args.load_dir, "autoencoder.pt")
+    if args.load_model is True:
+        args.load_model = os.path.join(args.load_dir, "agent.pt")
     args.save_model = os.path.join(args.save_dir, "agent.pt") if args.save_dir else None
     args.save_autoencoder = (
         os.path.join(args.save_dir, "autoencoder.pt") if args.save_dir else None

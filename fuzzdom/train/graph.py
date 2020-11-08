@@ -104,6 +104,11 @@ def actor_critic(args, device, receipts, dom_encoder, actor_critic_base):
         loaded_model = torch.load(args.load_model)
         # chomp state down from rdncrawl
         new_state = loaded_model.state_dict()
+        if args.load_actor:
+            # ignore critic
+            for key in list(new_state.keys()):
+                if key.startswith("critic"):
+                    new_state.pop(key)
         cur_state = actor_critic.state_dict()
         extra_keys = set(new_state.keys()) - set(cur_state.keys())
         for key in extra_keys:
