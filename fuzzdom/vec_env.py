@@ -299,15 +299,15 @@ def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
     o["dom_index"] = o["index"]
     o["dom_ref"] = torch.tensor(g.ref).view(-1, 1)
     o["pos"] = torch.Tensor(num_nodes, 3)
-    for i, (rx, ry, width, height, depth, n_children) in enumerate(
-        zip(g.rx, g.ry, g.width, g.height, g.depth, g.n_children)
+    for i, (top, left, width, height, depth, n_children) in enumerate(
+        zip(g.top, g.left, g.width, g.height, g.depth, g.n_children)
     ):
         iter_assign(
             o["pos"][i],
             (
-                (rx / max_rx + width / max_width) / 2,
-                (ry / max_ry + height / max_height) / 2,
-                depth / max_depth,
+                (left + width / 2) / max_x,  #
+                (top + height / 2) / max_y,  #
+                depth / max_depth,  #
             ),
         )
         if n_children == 0:

@@ -147,9 +147,9 @@ def agent(args, actor_critic):
     return agent
 
 
-def tensorboard_writer():
+def tensorboard_writer(args):
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
-    return SummaryWriter(log_dir=os.path.join("/tmp/log", ts_str))
+    return SummaryWriter(log_dir=os.path.join(args.log_dir, ts_str))
 
 
 def rollouts(args, envs, actor_critic):
@@ -160,17 +160,6 @@ def rollouts(args, envs, actor_critic):
         envs.action_space,
         actor_critic.recurrent_hidden_state_size,
     )
-
-
-def model_path(args):
-    if args.save_dir != "" and args.save_interval:
-        save_path = os.path.join(args.save_dir, args.algo)
-        try:
-            os.makedirs(save_path)
-        except OSError:
-            pass
-
-        return os.path.join(save_path, args.env_name + ".pt")
 
 
 def num_updates(args):
@@ -305,18 +294,17 @@ def episode_tick(
     # save for every interval-th episode or for the last epoch
     if (
         args.save_interval
-        and args.save_dir != ""
+        and args.save_dir
         and (j % args.save_interval == 0 or j == num_updates - 1)
     ):
-        save_path = os.path.join(args.save_dir, args.algo)
+        save_path = args.save_dir
         try:
             os.makedirs(save_path)
         except OSError:
             pass
 
-        model_path = os.path.join(save_path, "agent.pt")
-        torch.save(actor_critic, model_path)
-        print("Saved model:", model_path)
+        torch.save(actor_critic, args.save_model)
+        print("Saved model:", args.save_model)
 
     if j % args.log_interval == 0:
         total_num_steps = (j + 1) * args.num_processes * args.num_steps

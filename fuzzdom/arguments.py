@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import torch
 
@@ -140,22 +141,19 @@ def get_args():
     parser.add_argument(
         "--env-name",
         default="miniwob/click-button.html",
-        help="environment to train on (default: miniwob/click-button.html), use 'levels' for multi-task",
+        help="url to train on (default: miniwob/click-button.html), use 'levels' for multi-task",
     )
     parser.add_argument(
         "--log-dir",
-        default="/tmp/gym/",
-        help="directory to save agent logs (default: /tmp/gym)",
+        default="./tmp/",
+        help="directory to save agent logs (default: ./tmp)",
     )
     parser.add_argument(
         "--save-dir",
         default="./trained_models/",
-        help="directory to save agent logs (default: ./trained_models/)",
+        help="directory to save agent models (default: ./trained_models)",
     )
-    parser.add_argument("--load-model", default=None, help="path to initial model")
-    parser.add_argument(
-        "--load-autoencoder", default=None, help="path to pretrained autoencoder model"
-    )
+    parser.add_argument("--load-dir", help="directory to load agent models")
     parser.add_argument(
         "--no-cuda", action="store_true", default=False, help="disables CUDA training"
     )
@@ -180,6 +178,14 @@ def get_args():
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
+    args.load_model = os.path.join(args.load_dir, "agent.pt") if args.load_dir else None
+    args.load_autoencoder = (
+        os.path.join(args.load_dir, "autoencoder.pt") if args.load_dir else None
+    )
+    args.save_model = os.path.join(args.save_dir, "agent.pt") if args.save_dir else None
+    args.save_autoencoder = (
+        os.path.join(args.save_dir, "autoencoder.pt") if args.save_dir else None
+    )
 
     assert args.algo in ["a2c", "ppo", "acktr"]
     if args.recurrent_policy:
