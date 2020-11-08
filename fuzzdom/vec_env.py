@@ -244,29 +244,34 @@ def encode_fields(fields):
 RADIO_VALUES = {True: 1.0, False: -1.0}
 
 
-def iter_tensor(iterable, entries, size):
-    t = torch.Tensor(entries, size)
+def iter_assign(t, iterable):
     for i, v in enumerate(iterable):
         t[i] = v
     return t
 
 
+iter_tensor = lambda iterable, entries, size: iter_assign(
+    torch.Tensor(entries, size), iterable
+)
+
+
 short_embed_t = lambda x: torch.from_numpy(short_embed(x))
+safe_max = lambda x: max(chain(x, [1]))
 
 
 def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
     assert len(g.row)
-    o = {"pos": []}
+    o = {}
     leaves = []
     num_nodes = len(g.ref)
     assert num_nodes, str(g)
-    max_width = max(chain(g.width, [1.0]))
-    max_height = max(chain(g.height, [1.0]))
-    max_y = max(chain(g.top, [1.0]))
-    max_x = max(chain(g.left, [1.0]))
-    max_ry = max(chain(map(abs, g.ry), [1.0]))
-    max_rx = max(chain(map(abs, g.rx), [1.0]))
-    max_depth = max(chain(g.depth, [1]))
+    max_width = safe_max(g.width)
+    max_height = safe_max(g.height)
+    max_y = safe_max(g.top)
+    max_x = safe_max(g.left)
+    max_ry = safe_max(map(abs, g.ry))
+    max_rx = safe_max(map(abs, g.rx))
+    max_depth = safe_max(g.depth)
     if encode_with is None:
         encode_with = {
             "text": short_embed_t,
@@ -297,12 +302,13 @@ def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
     for i, (rx, ry, width, height, depth, n_children) in enumerate(
         zip(g.rx, g.ry, g.width, g.height, g.depth, g.n_children)
     ):
-        o["pos"][i] = torch.tensor(
-            [
+        iter_assign(
+            o["pos"][i],
+            (
                 (rx / max_rx + width / max_width) / 2,
                 (ry / max_ry + height / max_height) / 2,
                 depth,
-            ]
+            ),
         )
         if n_children == 0:
             leaves.append(i)
