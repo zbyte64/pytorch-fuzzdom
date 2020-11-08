@@ -831,7 +831,7 @@ class Instructor(GNNBase):
         assert all(map(lambda x: isinstance(x, Batch), inputs))
         dom, objectives, objectives_projection, leaves, actions, *_ = inputs
         assert actions.edge_index is not None, str(inputs)
-        self.start_resolve(
+        r = self.start_resolve(
             {
                 "dom": dom,
                 "_field": objectives,
@@ -844,12 +844,9 @@ class Instructor(GNNBase):
         )
 
         return (
-            self.resolve_value(self.critic_value),
-            (
-                self.resolve_value(self.action_votes),
-                self.resolve_value(self.action_batch_idx),
-            ),
-            self.resolve_value(lambda rnn_hxs: rnn_hxs),
+            self.critic(r),
+            (r(self.action_votes), r(self.action_batch_idx),),
+            r["rnn_hxs"],
         )
 
 

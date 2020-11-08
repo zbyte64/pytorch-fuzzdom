@@ -143,6 +143,11 @@ def optimize(
     autoencoder_loss = None
     ae_values = list()
     rdn_values = list()
+    rdn_cutoff = (
+        rdn_scorer.score_normalizer.mean - rdn_scorer.score_normalizer.std_dev
+        if rdn_scorer.score_normalizer.mean is not None
+        else 0
+    )
 
     for subset in sampler:
         ds = receipts.redeem(torch.tensor(subset))
@@ -155,8 +160,8 @@ def optimize(
 
         # train autoencoder
         for i, rdn_score in zip(subset, rdn_scores.flatten().tolist()):
-            # not ineresting: skip if rdn score is below average
-            if rdn_score < (rdn_scorer.score_normalizer.mean or 0):
+            # not ineresting: skip if rdn score is well below average
+            if rdn_score < rdn_cutoff:
                 continue
             data = receipts[i][0]
             del data.batch
