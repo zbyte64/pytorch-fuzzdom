@@ -257,7 +257,6 @@ short_embed_t = lambda x: torch.from_numpy(short_embed(x))
 def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
     assert len(g.row)
     o = {"pos": []}
-    edges = (g.row, g.col)
     leaves = []
     num_nodes = len(g.ref)
     assert num_nodes, str(g)
@@ -294,26 +293,24 @@ def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
     o["index"] = torch.arange(0, num_nodes)
     o["dom_index"] = o["index"]
     o["dom_ref"] = torch.tensor(g.ref).view(-1, 1)
+    o["pos"] = torch.Tensor(num_nodes, 3)
     for i, (rx, ry, width, height, depth, n_children) in enumerate(
         zip(g.rx, g.ry, g.width, g.height, g.depth, g.n_children)
     ):
-        o["pos"].append(
-            torch.tensor(
-                [
-                    (rx / max_rx + width / max_width) / 2,
-                    (ry / max_ry + height / max_height) / 2,
-                    depth,
-                ]
-            )
+        o["pos"][i] = torch.tensor(
+            [
+                (rx / max_rx + width / max_width) / 2,
+                (ry / max_ry + height / max_height) / 2,
+                depth,
+            ]
         )
-        # add self loop
-        edges[0].append(i)
-        edges[1].append(i)
         if n_children == 0:
             leaves.append(i)
-    assert o["pos"], str(g)
-    o["pos"] = torch.stack(o["pos"])
-    o["edge_index"] = torch.stack([torch.tensor(edges[0]), torch.tensor(edges[1])])
+
+    o["edge_index"] = torch.tensor([g.row, g.col], dtype=torch.long)
+    o["edge_index"] = torch.cat(
+        (o["edge_index"], torch.arange(0, num_nodes).repeat(2, 1)), dim=1
+    )
     data = SubData(o, index=num_nodes)
     data.num_nodes = num_nodes
     return data, leaves, max_depth
