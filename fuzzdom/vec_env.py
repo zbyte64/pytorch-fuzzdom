@@ -244,7 +244,17 @@ def encode_fields(fields):
 RADIO_VALUES = {True: 1.0, False: -1.0}
 
 
-def encode_dom_info(g: DomInfo, encode_with=None):
+def iter_tensor(iterable, entries, size):
+    t = torch.Tensor(entries, size)
+    for i, v in enumerate(iterable):
+        t[i] = v
+    return t
+
+
+short_embed_t = lambda x: torch.from_numpy(short_embed(x))
+
+
+def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
     assert len(g.row)
     o = {"pos": []}
     edges = (g.row, g.col)
@@ -260,24 +270,26 @@ def encode_dom_info(g: DomInfo, encode_with=None):
     max_depth = max(chain(g.depth, [1]))
     if encode_with is None:
         encode_with = {
-            "text": short_embed,
-            "value": short_embed,
-            "tag": short_embed,
-            "classes": short_embed,
-            "rx": tuplize(lambda x: minmax_scale(x, -max_rx, max_rx)),
-            "ry": tuplize(lambda x: minmax_scale(x, -max_ry, max_ry)),
-            "height": tuplize(lambda x: minmax_scale(x, 0, max_height)),
-            "width": tuplize(lambda x: minmax_scale(x, 0, max_width)),
-            "top": tuplize(lambda x: minmax_scale(x, 0, max_y)),
-            "left": tuplize(lambda x: minmax_scale(x, 0, max_x)),
-            "focused": tuplize(lambda x: 1.0 if x else 0.0),
-            "tampered": tuplize(lambda x: 1.0 if x else 0.0),
-            "depth": tuplize(lambda d: (d + 1) / max_depth),
+            "text": short_embed_t,
+            "value": short_embed_t,
+            "tag": short_embed_t,
+            "classes": short_embed_t,
+            "rx": lambda x: minmax_scale(x, -max_rx, max_rx),
+            "ry": lambda x: minmax_scale(x, -max_ry, max_ry),
+            "height": lambda x: minmax_scale(x, 0, max_height),
+            "width": lambda x: minmax_scale(x, 0, max_width),
+            "top": lambda x: minmax_scale(x, 0, max_y),
+            "left": lambda x: minmax_scale(x, 0, max_x),
+            "focused": lambda x: 1.0 if x else 0.0,
+            "tampered": lambda x: 1.0 if x else 0.0,
+            "depth": lambda d: (d + 1) / max_depth,
         }
+    text_keys = {"text", "value", "tag", "classes"}
     for key, f in encode_with.items():
-        o[key] = torch.tensor(list(map(f, getattr(g, key))))
-    o["radio_value"] = torch.tensor(
-        list(map(tuplize(lambda x: RADIO_VALUES.get(x, 0.0)), g.value))
+        size = text_embed_size if key in text_keys else 1
+        o[key] = iter_tensor(map(f, getattr(g, key)), num_nodes, size)
+    o["radio_value"] = iter_tensor(
+        map(lambda x: RADIO_VALUES.get(x, 0.0), g.value), num_nodes, 1
     )
     o["index"] = torch.arange(0, num_nodes)
     o["dom_index"] = o["index"]
