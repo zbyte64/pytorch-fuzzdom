@@ -257,6 +257,8 @@ iter_tensor = lambda iterable, entries, size: iter_assign(
 
 short_embed_t = lambda x: torch.from_numpy(short_embed(x))
 safe_max = lambda x: max(chain(x, [1]))
+truthy_embed = lambda x: 1.0 if x else 0.0
+radio_embed = lambda x: RADIO_VALUES.get(x, 0.0)
 
 
 def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
@@ -284,17 +286,15 @@ def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
             "width": lambda x: minmax_scale(x, 0, max_width),
             "top": lambda x: minmax_scale(x, 0, max_y),
             "left": lambda x: minmax_scale(x, 0, max_x),
-            "focused": lambda x: 1.0 if x else 0.0,
-            "tampered": lambda x: 1.0 if x else 0.0,
-            "depth": lambda d: (d + 1) / max_depth,
+            "focused": truthy_embed,
+            "tampered": truthy_embed,
+            "depth": lambda x: minmax_scale(x, 0, max_depth),
         }
     text_keys = {"text", "value", "tag", "classes"}
     for key, f in encode_with.items():
         size = text_embed_size if key in text_keys else 1
         o[key] = iter_tensor(map(f, getattr(g, key)), num_nodes, size)
-    o["radio_value"] = iter_tensor(
-        map(lambda x: RADIO_VALUES.get(x, 0.0), g.value), num_nodes, 1
-    )
+    o["radio_value"] = iter_tensor(map(radio_embed, g.value), num_nodes, 1)
     o["index"] = torch.arange(0, num_nodes)
     o["dom_index"] = o["index"]
     o["dom_ref"] = torch.tensor(g.ref).view(-1, 1)
@@ -307,7 +307,7 @@ def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
             (
                 (rx / max_rx + width / max_width) / 2,
                 (ry / max_ry + height / max_height) / 2,
-                depth,
+                depth / max_depth,
             ),
         )
         if n_children == 0:
