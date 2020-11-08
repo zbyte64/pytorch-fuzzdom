@@ -160,19 +160,16 @@ def get_args():
         "--load-autoencoder",
         action="store_true",
         default=False,
-        help="Load autoencoder from load directory",
-    )
-    parser.add_argument(
-        "--load-model",
-        action="store_true",
-        default=False,
-        help="Load entire model from load directory",
+        help="Load autoencoder",
     )
     parser.add_argument(
         "--load-actor",
         action="store_true",
         default=False,
-        help="Load just the actor from load directory (drop critic weights)",
+        help="Load just the actor (does not include critic or autoencoder)",
+    )
+    parser.add_argument(
+        "--load-critic", action="store_true", default=False, help="Load just the critic"
     )
     parser.add_argument(
         "--no-cuda", action="store_true", default=False, help="disables CUDA training"
@@ -198,10 +195,10 @@ def get_args():
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
-    if args.load_autoencoder is True:
-        args.load_autoencoder = os.path.join(args.load_dir, "autoencoder.pt")
-    if args.load_model is True:
+    if args.load_actor or args.load_critic or args.load_autoencoder is True:
         args.load_model = os.path.join(args.load_dir, "agent.pt")
+    else:
+        args.load_model = False
     args.save_model = os.path.join(args.save_dir, "agent.pt") if args.save_dir else None
     args.save_autoencoder = (
         os.path.join(args.save_dir, "autoencoder.pt") if args.save_dir else None

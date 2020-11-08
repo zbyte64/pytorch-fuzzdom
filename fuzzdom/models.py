@@ -183,6 +183,10 @@ def domain(target_domain=None):
 
 
 class GNNBase(ResolveMixin, NNBase):
+    """
+    DOM Based Actor
+    """
+
     def __init__(
         self,
         input_dim,
@@ -307,24 +311,7 @@ class GNNBase(ResolveMixin, NNBase):
         self.actor_gate = nn.Sequential(
             init_ones(nn.Linear(trunk_size, 1), "relu"), nn.ReLU()
         )
-
-        critic_embed_size = 16
-        # ac norm, active, has value
-        critic_size = 3
-        self.critic_mp_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
-        )
-        self.critic_ap_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
-        )
-        critic_gate_size = (
-            2 * critic_size + 1 * objective_active_size
-        )  # active steps, near_completion
-        self.critic_gate = nn.Sequential(
-            init_xu(nn.Linear(critic_gate_size, critic_embed_size), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(critic_embed_size, 1), "linear"),
-        )
+        self.critic = DOMCritic(objective_active_size)
 
     @domain("dom")
     def x(self, dom):
@@ -657,13 +644,6 @@ class GNNBase(ResolveMixin, NNBase):
         return softmax(self.active_fn(unpack_sequence(obj_active_seq)), field.batch)
 
     @domain("action_index")
-    def critic_trunk(self, action, ac_norm, action_status_indicators, obj_active):
-        _obj_active = safe_bc(obj_active, action.field_index)
-
-        trunk = torch.cat([action_status_indicators, _obj_active, ac_norm], dim=1)
-        return global_max_pool(trunk, action.action_index)
-
-    @domain("action_index")
     def action_trunk(self, action, ac_norm, action_status_indicators, obj_active):
         _obj_active = safe_bc(obj_active, action.field_index)
         trunk = torch.cat(
@@ -674,27 +654,8 @@ class GNNBase(ResolveMixin, NNBase):
     def action_votes(self, action_trunk):
         return self.actor_gate(action_trunk)
 
-    def critic_x(
-        self, field, action, critic_trunk, obj_active, action_batch_idx, obj_active_mem
-    ):
-        # layers * directions, batch, hidden_size
-        critic_near_completion = obj_active_mem[-1]
-
-        critic_mp = self.critic_mp_score(critic_trunk)
-        critic_ap = self.critic_ap_score(critic_trunk)
-
-        # max/add objective difficulty in batch
-        critic_mp = torch.relu(global_max_pool(critic_mp, action_batch_idx))
-        critic_ap = torch.tanh(global_add_pool(critic_ap, action_batch_idx))
-
-        critic_x = torch.cat([critic_mp, critic_ap, critic_near_completion], dim=1)
-        return critic_x
-
     def action_batch_idx(self, action):
         return global_max_pool(action.batch.view(-1, 1), action.action_index).view(-1)
-
-    def critic_value(self, critic_x):
-        return self.critic_gate(critic_x)
 
     def forward(self, inputs, rnn_hxs, masks):
         from torch_geometric.data import Batch, Data
@@ -716,10 +677,62 @@ class GNNBase(ResolveMixin, NNBase):
         )
 
         return (
-            r["critic_value"],
+            self.critic(r),
             (r["action_votes"], r["action_batch_idx"]),
             r["rnn_hxs"],
         )
+
+
+class DOMCritic(nn.Module):
+    def __init__(self, objective_active_size):
+        super().__init__()
+        critic_embed_size = 16
+        # ac norm, active, has value
+        critic_size = 3
+        self.critic_mp_score = nn.Sequential(
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
+        )
+        self.critic_ap_score = nn.Sequential(
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
+        )
+        critic_gate_size = (
+            2 * critic_size + 1 * objective_active_size
+        )  # active steps, near_completion
+        self.critic_gate = nn.Sequential(
+            init_xu(nn.Linear(critic_gate_size, critic_embed_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(critic_embed_size, 1), "linear"),
+        )
+
+    @domain("action_index")
+    def critic_trunk(self, action, ac_norm, action_status_indicators, obj_active):
+        _obj_active = safe_bc(obj_active, action.field_index)
+
+        trunk = torch.cat([action_status_indicators, _obj_active, ac_norm], dim=1)
+        return global_max_pool(trunk, action.action_index)
+
+    def critic_value(self, critic_x):
+        return self.critic_gate(critic_x)
+
+    def critic_x(
+        self, field, action, critic_trunk, obj_active, action_batch_idx, obj_active_mem
+    ):
+        # layers * directions, batch, hidden_size
+        critic_near_completion = obj_active_mem[-1]
+
+        critic_mp = self.critic_mp_score(critic_trunk)
+        critic_ap = self.critic_ap_score(critic_trunk)
+
+        # max/add objective difficulty in batch
+        critic_mp = torch.relu(global_max_pool(critic_mp, action_batch_idx))
+        critic_ap = torch.tanh(global_add_pool(critic_ap, action_batch_idx))
+
+        critic_x = torch.cat([critic_mp, critic_ap, critic_near_completion], dim=1)
+        return critic_x
+
+    def forward(self, resolver):
+        r = resolver.merge(self)
+        return r("critic_value")
 
 
 class Instructor(GNNBase):

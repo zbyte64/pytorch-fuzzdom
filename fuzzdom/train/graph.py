@@ -78,7 +78,7 @@ def device(args):
 
 
 def autoencoder(args, text_embed_size, encoder_size, autoencoder_size):
-    if args.load_autoencoder:
+    if isinstance(args.load_autoencoder, str):
         return torch.load(args.load_autoencoder)
     return GAE(Encoder("GAE", autoencoder_size, encoder_size))
 
@@ -104,17 +104,30 @@ def actor_critic(args, device, receipts, dom_encoder, actor_critic_base):
         loaded_model = torch.load(args.load_model)
         # chomp state down from rdncrawl
         new_state = loaded_model.state_dict()
-        if args.load_actor:
-            # ignore critic
-            for key in list(new_state.keys()):
-                if key.startswith("critic"):
-                    new_state.pop(key)
         cur_state = actor_critic.state_dict()
-        extra_keys = set(new_state.keys()) - set(cur_state.keys())
-        for key in extra_keys:
-            del new_state[key]
-        # merge up state to transfer to rdncrawl
-        cur_state.update(new_state)
+
+        # load_autoencoder
+        all_keys = set(filter(lambda k: k in new_state, cur_state.keys()))
+        ae_keys = set(filter(lambda key: key.startswith("base.dom_encoder"), all_keys))
+        # load_actor
+        # load_critic
+        critic_keys = set(filter(lambda key: key.startswith("base.critic"), all_keys))
+        actor_keys = all_keys - ae_keys - critic_keys
+        if args.load_actor:
+            assert actor_keys
+            for key in actor_keys:
+                cur_state[key] = new_state[key]
+
+        if args.load_autoencoder is True:
+            assert ae_keys, str(all_keys)
+            for key in ae_keys:
+                cur_state[key] = new_state[key]
+
+        if args.load_critic:
+            assert critic_keys
+            for key in critic_keys:
+                cur_state[key] = new_state[key]
+
         actor_critic.load_state_dict(cur_state)
 
     actor_critic.to(device)
@@ -274,6 +287,57 @@ def optimize(args, actor_critic, agent, rollouts):
     }
 
 
+def save_models(args, actor_critic):
+    save_path = args.save_dir
+    try:
+        os.makedirs(save_path)
+    except OSError:
+        pass
+
+    torch.save(actor_critic, args.save_model)
+    print("Saved model:", args.save_model)
+
+
+def log_stats(
+    resolver, args, j, actor_critic, episode_rewards, start, tensorboard_writer
+):
+    total_num_steps = (j + 1) * args.num_processes * args.num_steps
+    if len(episode_rewards) > 1:
+        end = time.time()
+
+        print(
+            "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n".format(
+                j,
+                total_num_steps,
+                int(total_num_steps / (end - start)),
+                len(episode_rewards),
+                np.mean(episode_rewards),
+                np.median(episode_rewards),
+                np.min(episode_rewards),
+                np.max(episode_rewards),
+                # dist_entropy,
+                # value_loss,
+                # action_loss,
+            )
+        )
+    else:
+        print(
+            "Updates {j}, value loss {value_loss}, action loss {action_loss}".format(
+                j=j,
+                value_loss=resolver["value_loss"],
+                action_loss=resolver["action_loss"],
+            )
+        )
+
+    if hasattr(LevelTracker, "global_scoreboard") and len(episode_rewards) > 1:
+        from pprint import pprint
+
+        pprint(LevelTracker.global_scoreboard)
+
+    actor_critic.base.report_values(tensorboard_writer, total_num_steps)
+    resolver.report_values(tensorboard_writer, total_num_steps)
+
+
 def episode_tick(
     args,
     j,
@@ -302,51 +366,12 @@ def episode_tick(
         and args.save_dir
         and (j % args.save_interval == 0 or j == num_updates - 1)
     ):
-        save_path = args.save_dir
-        try:
-            os.makedirs(save_path)
-        except OSError:
-            pass
-
-        torch.save(actor_critic, args.save_model)
-        print("Saved model:", args.save_model)
+        save_models(args, actor_critic)
 
     if j % args.log_interval == 0:
-        total_num_steps = (j + 1) * args.num_processes * args.num_steps
-        if len(episode_rewards) > 1:
-            end = time.time()
-
-            print(
-                "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n".format(
-                    j,
-                    total_num_steps,
-                    int(total_num_steps / (end - start)),
-                    len(episode_rewards),
-                    np.mean(episode_rewards),
-                    np.median(episode_rewards),
-                    np.min(episode_rewards),
-                    np.max(episode_rewards),
-                    # dist_entropy,
-                    # value_loss,
-                    # action_loss,
-                )
-            )
-        else:
-            print(
-                "Updates {j}, value loss {value_loss}, action loss {action_loss}".format(
-                    j=j,
-                    value_loss=resolver["value_loss"],
-                    action_loss=resolver["action_loss"],
-                )
-            )
-
-        if hasattr(LevelTracker, "global_scoreboard") and len(episode_rewards) > 1:
-            from pprint import pprint
-
-            pprint(LevelTracker.global_scoreboard)
-
-        actor_critic.base.report_values(tensorboard_writer, total_num_steps)
-        resolver.report_values(tensorboard_writer, total_num_steps)
+        log_stats(
+            resolver, args, j, actor_critic, episode_rewards, start, tensorboard_writer
+        )
 
 
 def train(modules=locals()):
