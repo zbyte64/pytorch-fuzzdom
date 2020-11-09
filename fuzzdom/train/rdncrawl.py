@@ -158,6 +158,9 @@ def optimize(
         rdn_loss.backward()
         rdn_values.append(rdn_scores)
 
+        # free up memory
+        del ds, dom, logs
+
         # train autoencoder
         for i, rdn_score in zip(subset, rdn_scores.flatten().tolist()):
             # not ineresting: skip if rdn score is well below average

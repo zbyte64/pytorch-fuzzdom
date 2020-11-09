@@ -32,8 +32,9 @@ class FactoryResolver:
         self.state.update(other)
 
     def __enter__(self):
-        FactoryResolver._factory_stack.append(self)
-        self._suffix = FactoryResolver._last_resolve
+        if self.writer:
+            FactoryResolver._factory_stack.append(self)
+            self._suffix = FactoryResolver._last_resolve
         return self
 
     def __exit__(self, type, value, tb):
@@ -45,9 +46,8 @@ class FactoryResolver:
                 filter(bool, map(lambda s: s._suffix, FactoryResolver._factory_stack))
             )
             self.report_values(self.writer, self.step_number, prefix)
+            assert self == FactoryResolver._factory_stack.pop()
         self.state = None
-        assert self == FactoryResolver._factory_stack.pop()
-        # print("Done", FactoryResolver._factory_stack.pop())
 
     def __iter__(self):
         return iter(self.state)

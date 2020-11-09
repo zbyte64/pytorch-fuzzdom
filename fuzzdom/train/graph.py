@@ -375,17 +375,19 @@ def episode_tick(
 
 def train(modules=locals()):
     r = FactoryResolver(modules)
-    print("Initializing...")
-    r.update(r("start"))
-    num_updates = r["num_updates"]
     args = r["args"]
-    print("Iterations:", num_updates, args.num_steps)
-    last_action_time = time.time()
-
     if args.profile_memory:
         import tracemalloc
 
         tracemalloc.start()
+    print("Initializing...")
+    r.update(r("start"))
+    num_updates = r["num_updates"]
+
+    print("Iterations:", num_updates, args.num_steps)
+    last_action_time = time.time()
+
+    if args.profile_memory:
         last_snapshot = tracemalloc.take_snapshot()
 
     for j in range(num_updates):
