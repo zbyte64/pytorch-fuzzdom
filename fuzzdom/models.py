@@ -22,7 +22,8 @@ from a2c_ppo_acktr.utils import init
 
 from .distributions import NodeObjective
 from .functions import *
-from .nn import ResolveMixin, EdgeMask, EdgeAttrs
+from .nn import EdgeMask, EdgeAttrs
+from .factory_resolver import FactoryResolver
 
 
 class GraphPolicy(Policy):
@@ -31,32 +32,32 @@ class GraphPolicy(Policy):
     """
 
     def __init__(self, *args, receipts, **kwargs):
-        super(GraphPolicy, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.receipts = receipts
         # patch distributions to handle node based selection
         self.dist = NodeObjective()
 
     def act(self, inputs, rnn_hxs, masks, deterministic=False):
         inputs = self.receipts.redeem(inputs)
-        return super(GraphPolicy, self).act(inputs, rnn_hxs, masks, deterministic)
+        return super().act(inputs, rnn_hxs, masks, deterministic)
 
     def get_value(self, inputs, rnn_hxs, masks):
         inputs = self.receipts.redeem(inputs)
-        return super(GraphPolicy, self).get_value(inputs, rnn_hxs, masks)
+        return super().get_value(inputs, rnn_hxs, masks)
 
     def evaluate_actions(self, inputs, rnn_hxs, masks, action):
         inputs = self.receipts.redeem(inputs)
-        return super(GraphPolicy, self).evaluate_actions(inputs, rnn_hxs, masks, action)
+        return super().evaluate_actions(inputs, rnn_hxs, masks, action)
 
 
-class DirectionalPropagation(ResolveMixin, nn.Module):
+class DirectionalPropagation(nn.Module):
     def __init__(self, hidden_size, transitivity_size, mask_dim, K):
-        super(DirectionalPropagation, self).__init__()
+        super().__init__()
         self.dom_transitivity_fn = EdgeAttrs(hidden_size, transitivity_size)
         self.dom_edge_mask = EdgeMask(1 + transitivity_size, mask_dim, K)
         self.pos_edge_mask = EdgeMask(4 + transitivity_size, mask_dim, K)
 
-    def spatial_mask(self, x, dom, projection, mask):
+    def spatial_mask(self, x, dom, projection, mask, resolver):
         spatial_edge_trans = self.dom_transitivity_fn(x, dom.spatial_edge_index)
         if projection is not dom:
             _spatial_edge_trans = safe_bc_edges(
@@ -69,10 +70,10 @@ class DirectionalPropagation(ResolveMixin, nn.Module):
             mask,
             projection.spatial_edge_index,
         )
-        self.export_value("spatial_edge_weights", pos_mask_ew)
+        resolver["spatial_edge_weights"] = pos_mask_ew
         return pos_mask
 
-    def dom_mask(self, x, dom, projection, mask):
+    def dom_mask(self, x, dom, projection, mask, resolver):
         dom_edge_trans = self.dom_transitivity_fn(x, dom.dom_edge_index)
         if projection is not dom:
             _dom_edge_trans = safe_bc_edges(
@@ -85,15 +86,13 @@ class DirectionalPropagation(ResolveMixin, nn.Module):
             mask,
             projection.dom_edge_index,
         )
-        self.export_value("dom_edge_weights", dom_mask_ew)
+        resolver["dom_edge_weights"] = dom_mask_ew
         return dom_mask
 
     def forward(self, x, dom, projection, mask):
-        r = self.start_resolve(
-            {"x": x, "dom": dom, "mask": mask, "projection": projection}
-        )
-        pos_mask = r["spatial_mask"]
-        dom_mask = r["dom_mask"]
+        with FactoryResolver(self, x=x, dom=dom, mask=mask, projection=projection) as r:
+            pos_mask = r["spatial_mask"]
+            dom_mask = r["dom_mask"]
         return torch.max(mask, torch.max(pos_mask, dom_mask))
 
 
@@ -182,7 +181,7 @@ def domain(target_domain=None):
     return f
 
 
-class GNNBase(ResolveMixin, NNBase):
+class GNNBase(NNBase):
     """
     DOM Based Actor
     """
@@ -311,7 +310,23 @@ class GNNBase(ResolveMixin, NNBase):
         self.actor_gate = nn.Sequential(
             init_ones(nn.Linear(trunk_size, 1), "relu"), nn.ReLU()
         )
-        self.critic = DOMCritic(objective_active_size)
+        critic_embed_size = 16
+        # ac norm, active, has value
+        critic_size = 3
+        self.critic_mp_score = nn.Sequential(
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
+        )
+        self.critic_ap_score = nn.Sequential(
+            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
+        )
+        critic_gate_size = (
+            2 * critic_size + 1 * objective_active_size
+        )  # active steps, near_completion
+        self.critic_gate = nn.Sequential(
+            init_xu(nn.Linear(critic_gate_size, critic_embed_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(critic_embed_size, 1), "linear"),
+        )
 
     @domain("dom")
     def x(self, dom):
@@ -587,6 +602,7 @@ class GNNBase(ResolveMixin, NNBase):
         full_x,
         rnn_hxs,
         masks,
+        resolver,
     ):
         """
         Input for determining the active step
@@ -623,7 +639,7 @@ class GNNBase(ResolveMixin, NNBase):
             )
             goal_dom_flat = global_max_pool(goal_dom_encoded, dom_field.batch)
             curr_state, rnn_hxs = self._forward_gru(goal_dom_flat, rnn_hxs, masks)
-            self.export_value("rnn_hxs", rnn_hxs)
+            resolver["rnn_hxs"] = rnn_hxs
             state_indicator_input = torch.cat(
                 [goal_dom_input, safe_bc(curr_state, dom_field.batch)], dim=1
             )
@@ -636,10 +652,10 @@ class GNNBase(ResolveMixin, NNBase):
         return obj_indicator_order
 
     @domain("field")
-    def obj_active(self, field, obj_indicator_order):
+    def obj_active(self, field, obj_indicator_order, resolver):
         obj_ind_seq = pack_as_sequence(obj_indicator_order, field.batch)
         obj_active_seq, obj_active_mem = self.objective_active(obj_ind_seq)
-        self.export_value("obj_active_mem", obj_active_mem)
+        resolver["obj_active_mem"] = obj_active_mem
         # [0, 1]
         return softmax(self.active_fn(unpack_sequence(obj_active_seq)), field.batch)
 
@@ -664,45 +680,22 @@ class GNNBase(ResolveMixin, NNBase):
         assert all(map(lambda x: isinstance(x, Batch), inputs))
         dom, objectives, objectives_projection, leaves, actions, *history = inputs
         assert actions.edge_index is not None, str(inputs)
-        r = self.start_resolve(
-            {
-                "dom": dom,
-                "field": objectives,
-                "dom_leaf": leaves,
-                "dom_field": objectives_projection,
-                "action": actions,
-                "rnn_hxs": rnn_hxs,
-                "masks": masks,
-            }
-        )
 
-        return (
-            self.critic(r),
-            (r["action_votes"], r["action_batch_idx"]),
-            r["rnn_hxs"],
-        )
-
-
-class DOMCritic(nn.Module):
-    def __init__(self, objective_active_size):
-        super().__init__()
-        critic_embed_size = 16
-        # ac norm, active, has value
-        critic_size = 3
-        self.critic_mp_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
-        )
-        self.critic_ap_score = nn.Sequential(
-            init_xu(nn.Linear(critic_size, critic_size), "relu"), nn.ReLU()
-        )
-        critic_gate_size = (
-            2 * critic_size + 1 * objective_active_size
-        )  # active steps, near_completion
-        self.critic_gate = nn.Sequential(
-            init_xu(nn.Linear(critic_gate_size, critic_embed_size), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(critic_embed_size, 1), "linear"),
-        )
+        with FactoryResolver(
+            self,
+            dom=dom,
+            field=objectives,
+            dom_leaf=leaves,
+            dom_field=objectives_projection,
+            action=actions,
+            rnn_hxs=rnn_hxs,
+            masks=masks,
+        ) as r:
+            return (
+                r["critic_value"],
+                (r["action_votes"], r["action_batch_idx"]),
+                r["rnn_hxs"],
+            )
 
     @domain("action_index")
     def critic_trunk(self, action, ac_norm, action_status_indicators, obj_active):
@@ -729,10 +722,6 @@ class DOMCritic(nn.Module):
 
         critic_x = torch.cat([critic_mp, critic_ap, critic_near_completion], dim=1)
         return critic_x
-
-    def forward(self, resolver):
-        r = resolver.merge(self)
-        return r("critic_value")
 
 
 class Instructor(GNNBase):
@@ -831,23 +820,22 @@ class Instructor(GNNBase):
         assert all(map(lambda x: isinstance(x, Batch), inputs))
         dom, objectives, objectives_projection, leaves, actions, *_ = inputs
         assert actions.edge_index is not None, str(inputs)
-        r = self.start_resolve(
-            {
-                "dom": dom,
-                "_field": objectives,
-                "dom_leaf": leaves,
-                "dom_field": objectives_projection,
-                "action": actions,
-                "rnn_hxs": rnn_hxs,
-                "masks": masks,
-            }
-        )
 
-        return (
-            self.critic(r),
-            (r(self.action_votes), r(self.action_batch_idx),),
-            r["rnn_hxs"],
-        )
+        with FactoryResolver(
+            self,
+            dom=dom,
+            _field=objectives,
+            dom_leaf=leaves,
+            dom_field=objectives_projection,
+            action=actions,
+            rnn_hxs=rnn_hxs,
+            masks=masks,
+        ) as r:
+            return (
+                r["critic_value"],
+                (r["action_votes"], r["action_batch_idx"]),
+                r["rnn_hxs"],
+            )
 
 
 class Encoder(nn.Module):

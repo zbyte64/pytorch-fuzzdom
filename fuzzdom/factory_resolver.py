@@ -2,14 +2,23 @@ import torch
 from inspect import signature
 from tensorboardX import SummaryWriter
 
+# reporting hints
+writer = None
+
 
 class FactoryResolver:
     """
     Factory resolver/injector
     """
 
+    _last_resolve = None
+    _factory_stack = []
+    step_number = None
+    writer = None
+
     def __init__(self, factories, **initial_values):
-        self.state = initial_values
+        self.initial_values = initial_values
+        self.state = dict()
         if not isinstance(factories, dict):
             self.factories = {k: getattr(factories, k) for k in dir(factories)}
         else:
@@ -20,7 +29,25 @@ class FactoryResolver:
         return self.state.items()
 
     def update(self, other):
-        return self.state.update(other)
+        self.state.update(other)
+
+    def __enter__(self):
+        FactoryResolver._factory_stack.append(self)
+        self._suffix = FactoryResolver._last_resolve
+        return self
+
+    def __exit__(self, type, value, tb):
+        # close factory for further use
+        self.initial_values = None
+
+        if self.writer:
+            prefix = "_".join(
+                filter(bool, map(lambda s: s._suffix, FactoryResolver._factory_stack))
+            )
+            self.report_values(self.writer, self.step_number, prefix)
+        self.state = None
+        assert self == FactoryResolver._factory_stack.pop()
+        # print("Done", FactoryResolver._factory_stack.pop())
 
     def __iter__(self):
         return iter(self.state)
@@ -29,24 +56,27 @@ class FactoryResolver:
         self.state[key] = value
 
     def __hasitem__(self, key):
-        return key in self.state
+        return key in self.state or key in self.initial_values
 
     def __getitem__(self, key):
         if key in self.state:
             return self.state[key]
+        if key in self.initial_values:
+            return self.initial_values[key]
         assert key not in self._resolving
         self._resolving.add(key)
+        FactoryResolver._last_resolve = key
         f_or_value = self.factories[key]
         if callable(f_or_value):
             value = self(f_or_value)
         else:
             value = f_or_value
-        self.state[key] = value
+        self[key] = value
         self._resolving.remove(key)
         return value
 
     def report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):
-        for k, t in self.state.items():
+        for k, t in self.items():
             if k.startswith("_") or isinstance(t, FactoryResolver):
                 continue
             if isinstance(t, torch.Tensor):
@@ -81,7 +111,8 @@ class FactoryResolver:
         return (type(self), ({},))
 
     def chain(self, outer):
-        c = FactoryResolver(outer, **self.state)
+        c = FactoryResolver(outer)  # , **self.state)
+        c.state = self.state
         for key, value in self.factories.items():
             if key not in c.factories:
                 c.factories[key] = value

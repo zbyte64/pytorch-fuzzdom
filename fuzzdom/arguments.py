@@ -192,6 +192,12 @@ def get_args():
         default=False,
         help="use a linear schedule on the learning rate",
     )
+    parser.add_argument(
+        "--profile-memory",
+        action="store_true",
+        default=False,
+        help="profile memory between episodes and report memory growth",
+    )
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()

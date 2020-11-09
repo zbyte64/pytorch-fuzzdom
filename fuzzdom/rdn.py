@@ -5,9 +5,10 @@ from torch import nn
 import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
 
-from .models import Encoder, ResolveMixin, autoencoder_x
+from .models import Encoder, autoencoder_x
 from .vec_env import make_vec_envs
 from .functions import init_xu
+from .factory_resolver import FactoryResolver
 
 
 def freeze_model(model):
@@ -51,7 +52,7 @@ class NormalizeScore:
         ).clamp(*self.clamp_by)
 
 
-class RDNScorer(ResolveMixin, torch.nn.Module):
+class RDNScorer(torch.nn.Module):
     def __init__(self, in_channels=50, out_channels=32, text_embed_size=25):
         super().__init__()
         self.dom_guesser = Encoder("GAE", in_channels, out_channels)
@@ -76,8 +77,9 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
         return autoencoder_x(dom)
 
     def forward(self, dom, logs):
-        self.start_resolve({"dom": dom, "logs": logs})
-        return self.resolve_value(self.raw_score)
+        r = self.start_resolve({"dom": dom, "logs": logs})
+        with r:
+            return r["raw_score"]
 
     def guess_dom(self, dom, x):
         return global_max_pool(self.dom_guesser(x, dom.dom_edge_index), dom.batch)
@@ -99,13 +101,13 @@ class RDNScorer(ResolveMixin, torch.nn.Module):
         )
 
     def score(self, dom, logs):
-        r = self.start_resolve({"dom": dom, "logs": logs})
-        scores = r(self.raw_score)
+        with FactoryResolver(self, dom=dom, logs=logs) as r:
+            scores = r(self.raw_score)
         return self.score_normalizer.scale(scores)
 
     def loss(self, dom, logs):
-        r = self.start_resolve({"dom": dom, "logs": logs})
-        scores = r(self.raw_score)
+        with FactoryResolver(self, dom=dom, logs=logs) as r:
+            scores = r(self.raw_score)
         loss = scores.mean()
         return loss, scores.detach()
 

@@ -334,7 +334,6 @@ def log_stats(
 
         pprint(LevelTracker.global_scoreboard)
 
-    actor_critic.base.report_values(tensorboard_writer, total_num_steps)
     resolver.report_values(tensorboard_writer, total_num_steps)
 
 
@@ -375,21 +374,38 @@ def episode_tick(
 
 
 def train(modules=locals()):
-    resolv = FactoryResolver(modules)
+    r = FactoryResolver(modules)
     print("Initializing...")
-    resolv.update(resolv("start"))
-    num_updates = resolv["num_updates"]
-    args = resolv["args"]
+    r.update(r("start"))
+    num_updates = r["num_updates"]
+    args = r["args"]
     print("Iterations:", num_updates, args.num_steps)
     last_action_time = time.time()
 
+    if args.profile_memory:
+        import tracemalloc
+
+        tracemalloc.start()
+        last_snapshot = tracemalloc.take_snapshot()
+
     for j in range(num_updates):
-        resolv["j"] = j
-        resolv["last_action_time"] = last_action_time
-        resolv.update(resolv("run_episode"))
+        FactoryResolver.step_number = j
+        FactoryResolver.writer = None
+        r["j"] = j
+        r["last_action_time"] = last_action_time
+        r.update(r("run_episode"))
         last_action_time = time.time()
-        resolv.update(resolv("optimize"))
-        resolv("episode_tick")
+        if j % args.log_interval == 0:
+            FactoryResolver.writer = r["tensorboard_writer"]
+        r.update(r("optimize"))
+        r("episode_tick")
+        if args.profile_memory:
+            curr_snapshot = tracemalloc.take_snapshot()
+            stats = curr_snapshot.compare_to(last_snapshot, "lineno")
+            # display top 5
+            for i, stat in enumerate(stats[:5]):
+                print(i, stat)
+            last_snapshot = curr_snapshot
 
 
 if __name__ == "__main__":

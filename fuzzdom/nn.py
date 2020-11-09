@@ -2,38 +2,10 @@ import torch
 from torch import nn
 from torch_geometric.nn import APPNP
 import torch.nn.functional as F
-from tensorboardX import SummaryWriter
 
 from a2c_ppo_acktr.utils import init
 
 from .functions import *
-from .factory_resolver import FactoryResolver
-
-
-class ResolveMixin:
-    def start_resolve(self, params):
-        self._last_values = FactoryResolver(self, **params)
-        return self._last_values
-
-    def export_value(self, key, value):
-        self._last_values[key] = value
-
-    def resolve_value(self, func):
-        key = func.__name__
-        if key in self._last_values:
-            return self._last_values[key]
-        val = self._last_values(func)
-        if not key.startswith("_"):
-            self._last_values[key] = val
-        return val
-
-    def report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):
-        self._last_values.report_values(writer, step_number, prefix)
-        for k, m in self.named_modules():
-            if m is self:
-                continue
-            if hasattr(m, "report_values"):
-                m.report_values(writer, step_number, f"{prefix}{k}_")
 
 
 class EdgeAttrs(nn.Module):
