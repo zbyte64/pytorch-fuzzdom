@@ -14,6 +14,7 @@ services:
     volumes:
       - ./fuzzdom:/code/fuzzdom
       - ./tmp:/tmp
+      - ./tmp:/code/tmp
       - miniwob-volume:/root/.cache
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models

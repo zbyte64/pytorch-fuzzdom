@@ -113,6 +113,7 @@ def optimize(
     autoencoder_score_norm,
     filter_leaves,
     device,
+    resolver,
 ):
     print("optimizing rdn")
     with torch.no_grad():
@@ -164,8 +165,8 @@ def optimize(
         # train autoencoder
         for i, rdn_score in zip(subset, rdn_scores.flatten().tolist()):
             # not ineresting: skip if rdn score is well below average
-            if rdn_score < rdn_cutoff:
-                continue
+            # if rdn_score < rdn_cutoff:
+            #    continue
             data = receipts[i][0]
             del data.batch
             data.edge_index = data.dom_edge_index
@@ -191,13 +192,15 @@ def optimize(
 
     filter_leaves.actor_critic.load_state_dict(actor_critic.state_dict())
 
-    return {
-        "value_loss": value_loss,
-        "action_loss": action_loss,
-        "dist_entropy": dist_entropy,
-        "autoencoder_loss": autoencoder_loss,
-        "rdn_loss": rdn_loss,
-    }
+    resolver.update(
+        {
+            "value_loss": value_loss,
+            "action_loss": action_loss,
+            "dist_entropy": dist_entropy,
+            "autoencoder_loss": autoencoder_loss,
+            "rdn_loss": rdn_loss,
+        }
+    )
 
 
 if __name__ == "__main__":

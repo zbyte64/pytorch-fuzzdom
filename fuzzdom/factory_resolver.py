@@ -12,7 +12,11 @@ class FactoryResolver:
     """
 
     _last_resolve = None
+    _suffix = None
+    # Class Globals
     _factory_stack = []
+    _reported_values = set()
+    _last_step_number = 0
     step_number = None
     writer = None
 
@@ -31,22 +35,41 @@ class FactoryResolver:
     def update(self, other):
         self.state.update(other)
 
+    @classmethod
+    def enable_reporting(cls, writer, step_number):
+        cls.writer = writer
+        cls.step_number = step_number
+
+    @classmethod
+    def disable_reporting(cls):
+        cls.writer = None
+
     def __enter__(self):
-        if self.writer:
-            FactoryResolver._factory_stack.append(self)
-            self._suffix = FactoryResolver._last_resolve
+        if FactoryResolver._factory_stack:
+            parent = FactoryResolver._factory_stack[-1]
+            if parent._last_resolve:
+                self._suffix = parent._last_resolve
+        FactoryResolver._factory_stack.append(self)
         return self
 
     def __exit__(self, type, value, tb):
         # close factory for further use
         self.initial_values = None
 
-        if self.writer:
+        if FactoryResolver.writer:
+            if FactoryResolver.step_number > FactoryResolver._last_step_number:
+                FactoryResolver._last_step_number = FactoryResolver.step_number
+                self._reported_values.clear()
             prefix = "_".join(
                 filter(bool, map(lambda s: s._suffix, FactoryResolver._factory_stack))
             )
-            self.report_values(self.writer, self.step_number, prefix)
-            assert self == FactoryResolver._factory_stack.pop()
+            if prefix not in FactoryResolver._reported_values:
+                # print("reporting:", prefix)
+                self.report_values(
+                    FactoryResolver.writer, FactoryResolver.step_number, prefix
+                )
+                FactoryResolver._reported_values.add(prefix)
+        assert self == FactoryResolver._factory_stack.pop()
         self.state = None
 
     def __iter__(self):
@@ -65,7 +88,7 @@ class FactoryResolver:
             return self.initial_values[key]
         assert key not in self._resolving
         self._resolving.add(key)
-        FactoryResolver._last_resolve = key
+        self._last_resolve = key
         f_or_value = self.factories[key]
         if callable(f_or_value):
             value = self(f_or_value)
@@ -110,15 +133,13 @@ class FactoryResolver:
         # disable direct pickling
         return (type(self), ({},))
 
-    def chain(self, outer):
-        c = FactoryResolver(outer)  # , **self.state)
-        c.state = self.state
-        for key, value in self.factories.items():
-            if key not in c.factories:
-                c.factories[key] = value
+    def chain(self, _outer=None, **kwargs):
+        outer = _outer if _outer is not None else self.factories
+        initial_state = dict(self.state)
+        initial_state.update(kwargs)
+        c = FactoryResolver(outer, **initial_state)
+        if _outer is not None:
+            for key, value in self.factories.items():
+                if key not in c.factories:
+                    c.factories[key] = value
         return c
-
-    def merge(self, outer):
-        m = self.chain(outer)
-        m.state = self.state
-        return m

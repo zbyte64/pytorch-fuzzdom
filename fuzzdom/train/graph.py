@@ -36,11 +36,14 @@ def args():
     return get_args()
 
 
-def envs(args, receipts):
+def log_dir(args):
+    return os.path.expanduser(args.log_dir)
+
+
+def envs(args, receipts, log_dir):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    log_dir = os.path.expanduser(args.log_dir)
     eval_log_dir = log_dir + "_eval"
     utils.cleanup_log_dir(log_dir)
     utils.cleanup_log_dir(eval_log_dir)
@@ -165,9 +168,9 @@ def agent(args, actor_critic):
     return agent
 
 
-def tensorboard_writer(args):
+def tensorboard_writer(log_dir):
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
-    return SummaryWriter(log_dir=os.path.join(args.log_dir, ts_str))
+    return SummaryWriter(log_dir=os.path.join(log_dir, "log", ts_str))
 
 
 def rollouts(args, envs, actor_critic):
@@ -184,16 +187,25 @@ def num_updates(args):
     return int(args.num_env_steps) // args.num_steps // args.num_processes
 
 
-def start(envs, rollouts, device):
+def start(envs, rollouts, device, resolver):
     obs = envs.reset()
     rollouts.obs[0].copy_(torch.tensor(obs))
     rollouts.to(device)
     start = time.time()
-    return {"start": start, "obs": obs}
+    resolver.update({"start": start, "obs": obs})
 
 
 def run_episode(
-    args, envs, rollouts, actor_critic, agent, j, num_updates, last_action_time, obs
+    args,
+    envs,
+    rollouts,
+    actor_critic,
+    agent,
+    j,
+    num_updates,
+    last_action_time,
+    obs,
+    resolver,
 ):
     episode_rewards = deque(maxlen=args.num_steps * args.num_processes)
     rewards = deque(maxlen=args.num_steps * args.num_processes)
@@ -259,14 +271,16 @@ def run_episode(
             bad_masks,
         )
 
-    return {
-        "obs": obs,
-        "episode_rewards": episode_rewards,
-        "rewards": torch.tensor(rewards),
-    }
+    resolver.update(
+        {
+            "obs": obs,
+            "episode_rewards": episode_rewards,
+            "rewards": torch.tensor(rewards),
+        }
+    )
 
 
-def optimize(args, actor_critic, agent, rollouts):
+def optimize(args, actor_critic, agent, rollouts, resolver):
     with torch.no_grad():
         next_value = actor_critic.get_value(
             rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1]
@@ -280,11 +294,13 @@ def optimize(args, actor_critic, agent, rollouts):
         args.use_proper_time_limits,
     )
     value_loss, action_loss, dist_entropy = agent.update(rollouts)
-    return {
-        "value_loss": value_loss,
-        "action_loss": action_loss,
-        "dist_entropy": dist_entropy,
-    }
+    resolver.update(
+        {
+            "value_loss": value_loss,
+            "action_loss": action_loss,
+            "dist_entropy": dist_entropy,
+        }
+    )
 
 
 def save_models(args, actor_critic):
@@ -298,9 +314,7 @@ def save_models(args, actor_critic):
     print("Saved model:", args.save_model)
 
 
-def log_stats(
-    resolver, args, j, actor_critic, episode_rewards, start, tensorboard_writer
-):
+def log_stats(args, j, episode_rewards, start, value_loss, action_loss):
     total_num_steps = (j + 1) * args.num_processes * args.num_steps
     if len(episode_rewards) > 1:
         end = time.time()
@@ -323,9 +337,7 @@ def log_stats(
     else:
         print(
             "Updates {j}, value loss {value_loss}, action loss {action_loss}".format(
-                j=j,
-                value_loss=resolver["value_loss"],
-                action_loss=resolver["action_loss"],
+                j=j, value_loss=value_loss, action_loss=action_loss,
             )
         )
 
@@ -334,20 +346,9 @@ def log_stats(
 
         pprint(LevelTracker.global_scoreboard)
 
-    resolver.report_values(tensorboard_writer, total_num_steps)
-
 
 def episode_tick(
-    args,
-    j,
-    num_updates,
-    start,
-    episode_rewards,
-    actor_critic,
-    tensorboard_writer,
-    receipts,
-    rollouts,
-    resolver,
+    args, j, num_updates, receipts, rollouts, resolver,
 ):
     # put last observation first and clear
     obs_shape = rollouts.obs.size()[2:]
@@ -365,12 +366,10 @@ def episode_tick(
         and args.save_dir
         and (j % args.save_interval == 0 or j == num_updates - 1)
     ):
-        save_models(args, actor_critic)
+        resolver("save_models")
 
-    if j % args.log_interval == 0:
-        log_stats(
-            resolver, args, j, actor_critic, episode_rewards, start, tensorboard_writer
-        )
+    if args.log_interval and j % args.log_interval == 0:
+        resolver("log_stats")
 
 
 def train(modules=locals()):
@@ -381,7 +380,7 @@ def train(modules=locals()):
 
         tracemalloc.start()
     print("Initializing...")
-    r.update(r("start"))
+    r("start")
     num_updates = r["num_updates"]
 
     print("Iterations:", num_updates, args.num_steps)
@@ -390,17 +389,18 @@ def train(modules=locals()):
     if args.profile_memory:
         last_snapshot = tracemalloc.take_snapshot()
 
+    tensorboard_writer = r["tensorboard_writer"]
+
     for j in range(num_updates):
-        FactoryResolver.step_number = j
-        FactoryResolver.writer = None
-        r["j"] = j
-        r["last_action_time"] = last_action_time
-        r.update(r("run_episode"))
-        last_action_time = time.time()
-        if j % args.log_interval == 0:
-            FactoryResolver.writer = r["tensorboard_writer"]
-        r.update(r("optimize"))
-        r("episode_tick")
+        with r.chain(j=j, last_action_time=last_action_time) as s:
+            s("run_episode")
+            last_action_time = time.time()
+            if args.log_interval and j % args.log_interval == 0:
+                s.enable_reporting(tensorboard_writer, j)
+            s("optimize")
+            s.disable_reporting()
+            s("episode_tick")
+            r["obs"] = s["obs"]
         if args.profile_memory:
             curr_snapshot = tracemalloc.take_snapshot()
             stats = curr_snapshot.compare_to(last_snapshot, "lineno")
