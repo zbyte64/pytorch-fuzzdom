@@ -4,6 +4,7 @@ import math
 from torch import nn
 import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
+from torch_geometric.utils import remove_self_loops
 
 from .models import Encoder, autoencoder_x
 from .vec_env import make_vec_envs
@@ -148,9 +149,12 @@ class AEScorerGymWrapper(gym.Wrapper):
     def score_observation(self, observation):
         dom = observation[0]
         with torch.no_grad():
+            check, _ = remove_self_loops(dom.dom_edge_index)
+            if check.shape[1] < 5:
+                return 0
             x = autoencoder_x(dom)
-            z = self.autoencoder.encode(x, dom.edge_index)
-            score = self.autoencoder.recon_loss(z, dom.edge_index)
+            z = self.autoencoder.encode(x, dom.dom_edge_index)
+            score = self.autoencoder.recon_loss(z, dom.dom_edge_index)
             score = self.score_normalizer.scale(score)
             score = score.item()
             print("AE SCORE", score)

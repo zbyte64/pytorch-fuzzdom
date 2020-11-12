@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from inspect import signature
 from tensorboardX import SummaryWriter
 
@@ -57,18 +58,7 @@ class FactoryResolver:
         self.initial_values = None
 
         if FactoryResolver.writer:
-            if FactoryResolver.step_number > FactoryResolver._last_step_number:
-                FactoryResolver._last_step_number = FactoryResolver.step_number
-                self._reported_values.clear()
-            prefix = "_".join(
-                filter(bool, map(lambda s: s._suffix, FactoryResolver._factory_stack))
-            )
-            if prefix not in FactoryResolver._reported_values:
-                # print("reporting:", prefix)
-                self.report_values(
-                    FactoryResolver.writer, FactoryResolver.step_number, prefix
-                )
-                FactoryResolver._reported_values.add(prefix)
+            self.report_values()
         assert self == FactoryResolver._factory_stack.pop()
         self.state = None
 
@@ -98,11 +88,27 @@ class FactoryResolver:
         self._resolving.remove(key)
         return value
 
-    def report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):
+    def report_values(self):
+        if FactoryResolver.step_number > FactoryResolver._last_step_number:
+            FactoryResolver._last_step_number = FactoryResolver.step_number
+            FactoryResolver._reported_values.clear()
+        prefix = "_".join(
+            filter(bool, map(lambda s: s._suffix, FactoryResolver._factory_stack))
+        )
+        if prefix:
+            prefix += "_"
+        # CONSIDER: maybe _reported_values should track individual keys for incremental updates?
+        if prefix not in FactoryResolver._reported_values:
+            self._report_values(
+                FactoryResolver.writer, FactoryResolver.step_number, prefix
+            )
+            FactoryResolver._reported_values.add(prefix)
+
+    def _report_values(self, writer: SummaryWriter, step_number: int, prefix: str = ""):
         for k, t in self.items():
-            if k.startswith("_") or isinstance(t, FactoryResolver):
+            if k.startswith("_"):
                 continue
-            if isinstance(t, torch.Tensor):
+            if isinstance(t, (torch.Tensor, np.ndarray)):
                 if not len(t.shape):
                     writer.add_scalar(f"{prefix}{k}", t, step_number)
                 else:

@@ -398,6 +398,7 @@ def train(modules=locals()):
             if args.log_interval and j % args.log_interval == 0:
                 s.enable_reporting(tensorboard_writer, j)
             s("optimize")
+            s.report_values()
             s.disable_reporting()
             s("episode_tick")
             r["obs"] = s["obs"]

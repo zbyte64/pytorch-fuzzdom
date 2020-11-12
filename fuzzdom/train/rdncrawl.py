@@ -169,16 +169,15 @@ def optimize(
             #    continue
             data = receipts[i][0]
             del data.batch
-            data.edge_index = data.dom_edge_index
             # skip empty/small edges
-            check, _ = remove_self_loops(data.edge_index)
+            check, _ = remove_self_loops(data.dom_edge_index)
             if check.shape[1] < 5:
                 continue
             # no validation ?
             # data = train_test_split_edges(data)
             x = autoencoder_x(data)
-            z = autoencoder.encode(x, data.edge_index)
-            autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
+            z = autoencoder.encode(x, data.dom_edge_index)
+            autoencoder_loss = autoencoder.recon_loss(z, data.dom_edge_index)
             autoencoder_loss.backward()
             ae_values.append(autoencoder_loss.clone().detach().view(1))
     autoencoder_optimizer.step()
