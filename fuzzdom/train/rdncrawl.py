@@ -44,7 +44,7 @@ class ModelBasedLeafFilter:
 
 
 def autoencoder_score_norm():
-    return NormalizeScore(scale_by=0.25, clamp_by=(0, 0.25))
+    return NormalizeScore(shift_mean=True, scale_by=0.25, clamp_by=(0, 0.25), alpha=0.9)
 
 
 def rdn_scorer(device, text_embed_size, autoencoder_size, encoder_size):

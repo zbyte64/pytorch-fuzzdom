@@ -28,7 +28,7 @@ from fuzzdom import gail
 from fuzzdom.replay import ReplayRepository
 
 
-encoder_size = 25
+encoder_size = 120
 autoencoder_size = text_embed_size * 4
 
 
@@ -337,7 +337,9 @@ def log_stats(args, j, episode_rewards, start, value_loss, action_loss):
     else:
         print(
             "Updates {j}, value loss {value_loss}, action loss {action_loss}".format(
-                j=j, value_loss=value_loss, action_loss=action_loss,
+                j=j,
+                value_loss=value_loss,
+                action_loss=action_loss,
             )
         )
 
@@ -348,7 +350,12 @@ def log_stats(args, j, episode_rewards, start, value_loss, action_loss):
 
 
 def episode_tick(
-    args, j, num_updates, receipts, rollouts, resolver,
+    args,
+    j,
+    num_updates,
+    receipts,
+    rollouts,
+    resolver,
 ):
     # put last observation first and clear
     obs_shape = rollouts.obs.size()[2:]
