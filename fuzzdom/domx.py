@@ -5,28 +5,30 @@ import numpy as np
 from PIL import Image
 import random
 from collections import defaultdict
+from num2words import num2words
+import re
+
+text_embed_size = 300
+
+bpemb_en = BPEmb(lang="en", dim=text_embed_size)
+word_or_num_re = r"(?P<num>[0-9]+)|(?P<word>[\w]+)"
 
 
-bpemb_en = BPEmb(lang="en", dim=25)
+def _chunk_to_word(chunk):
+    v = chunk.groupdict()
+    s = v["word"]
+    if v["num"] is not None:
+        s = num2words(v["num"])
+    return s
 
 
-def embed(x):
+def embed(x, numeral_re=r"[0-9]+"):
     if x is not None:
         if not isinstance(x, str):
             x = str(x)
         # https://github.com/bheinzerling/bpemb/issues/20
-        x = (
-            x.replace("0", "zero")
-            .replace("1", "one")
-            .replace("2", "two")
-            .replace("3", "three")
-            .replace("4", "four")
-            .replace("5", "five")
-            .replace("6", "six")
-            .replace("7", "seven")
-            .replace("8", "eight")
-            .replace("9", "nine")
-        )
+        stream = map(_chunk_to_word, re.finditer(word_or_num_re, x))
+        x = " ".join(stream)
         return bpemb_en.embed(x)
 
 
@@ -35,7 +37,7 @@ def short_embed(x):
         e = embed(x)
         if e.shape and e.shape[0]:
             return e.mean(0)
-    return np.zeros(25, dtype=np.float32)
+    return np.zeros(text_embed_size, dtype=np.float32)
 
 
 def traverse_html(
@@ -71,9 +73,9 @@ def traverse_html(
             if len(attrs) or len(i.contents) or keep_empty:
                 for tag in tag_map.keys():
                     if tag not in attrs:
-                        attrs[tag] = np.zeros(25, dtype=np.float32)
+                        attrs[tag] = np.zeros(text_embed_size, dtype=np.float32)
                 if "string" not in attrs:
-                    attrs["string"] = np.zeros(25, dtype=np.float32)
+                    attrs["string"] = np.zeros(text_embed_size, dtype=np.float32)
                 attrs["tagname"] = short_embed(i.name)
                 g.add_node(i_str, **attrs)
                 if parent is not None:

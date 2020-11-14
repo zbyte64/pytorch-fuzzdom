@@ -19,6 +19,7 @@ from a2c_ppo_acktr.storage import RolloutStorage
 from fuzzdom.factory_resolver import FactoryResolver
 from fuzzdom.env import MiniWoBGraphEnvironment, ManagedWebInterface
 from fuzzdom.models import GNNBase, GraphPolicy, Encoder
+from fuzzdom.domx import text_embed_size
 from fuzzdom.storage import StorageReceipt
 from fuzzdom.vec_env import make_vec_envs
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
@@ -27,9 +28,8 @@ from fuzzdom import gail
 from fuzzdom.replay import ReplayRepository
 
 
-text_embed_size = 25
 encoder_size = 25
-autoencoder_size = text_embed_size * 4 + 8
+autoencoder_size = text_embed_size * 4
 
 
 def args():
@@ -370,6 +370,10 @@ def episode_tick(
 
     if args.log_interval and j % args.log_interval == 0:
         resolver("log_stats")
+
+    # attempt to fix segfault
+    # https://github.com/pytorch/pytorch/issues/19969
+    torch.cuda.synchronize()
 
 
 def train(modules=locals()):

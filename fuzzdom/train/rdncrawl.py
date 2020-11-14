@@ -93,7 +93,7 @@ def actor_critic_base():
 
 
 def rdn_optimizer(rdn_scorer, args):
-    return torch.optim.Adam(rdn_scorer.parameters(), lr=args.lr)
+    return torch.optim.Adam(rdn_scorer.parameters(), lr=args.rdn_lr)
 
 
 def autoencoder_optimizer(autoencoder, args):

@@ -10,6 +10,7 @@ from .models import Encoder, autoencoder_x
 from .vec_env import make_vec_envs
 from .functions import init_xu
 from .factory_resolver import FactoryResolver
+from .domx import text_embed_size
 
 
 def freeze_model(model):
@@ -54,7 +55,9 @@ class NormalizeScore:
 
 
 class RDNScorer(torch.nn.Module):
-    def __init__(self, in_channels=50, out_channels=32, text_embed_size=25):
+    def __init__(
+        self, in_channels=50, out_channels=32, text_embed_size=text_embed_size
+    ):
         super().__init__()
         self.dom_guesser = Encoder("GAE", in_channels, out_channels)
         self.dom_target = freeze_model(Encoder("GAE", in_channels, out_channels))

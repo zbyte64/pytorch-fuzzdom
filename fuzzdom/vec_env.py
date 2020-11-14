@@ -18,7 +18,7 @@ import scipy.spatial
 import random
 from itertools import chain
 
-from .domx import short_embed
+from .domx import short_embed, text_embed_size
 from .state import MiniWoBGraphState, DomInfo
 from .data import vectorize_projections, from_networkx, SubData, broadcast_edges
 
@@ -256,23 +256,23 @@ iter_tensor = lambda iterable, entries, size: iter_assign(
 
 
 short_embed_t = lambda x: torch.from_numpy(short_embed(x))
-safe_max = lambda x: max(chain(x, [1]))
+safe_max = lambda x, m=[1]: max(chain(x, m))
 truthy_embed = lambda x: 1.0 if x else 0.0
 radio_embed = lambda x: RADIO_VALUES.get(x, 0.0)
 
 
-def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
+def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=text_embed_size):
     assert len(g.row)
     o = {}
     leaves = []
     num_nodes = len(g.ref)
     assert num_nodes, str(g)
-    max_width = safe_max(g.width)
-    max_height = safe_max(g.height)
+    # max_width = safe_max(g.width)
+    # max_height = safe_max(g.height)
     max_y = safe_max(g.top)
     max_x = safe_max(g.left)
-    max_ry = safe_max(map(abs, g.ry))
-    max_rx = safe_max(map(abs, g.rx))
+    # max_ry = safe_max(map(abs, g.ry))
+    # max_rx = safe_max(map(abs, g.rx))
     max_depth = safe_max(g.depth)
     if encode_with is None:
         encode_with = {
@@ -280,12 +280,12 @@ def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=25):
             "value": short_embed_t,
             "tag": short_embed_t,
             "classes": short_embed_t,
-            "rx": lambda x: minmax_scale(x, -max_rx, max_rx),
-            "ry": lambda x: minmax_scale(x, -max_ry, max_ry),
-            "height": lambda x: minmax_scale(x, 0, max_height),
-            "width": lambda x: minmax_scale(x, 0, max_width),
-            "top": lambda x: minmax_scale(x, 0, max_y),
-            "left": lambda x: minmax_scale(x, 0, max_x),
+            # "rx": lambda x: minmax_scale(x, -max_rx, max_rx),
+            # "ry": lambda x: minmax_scale(x, -max_ry, max_ry),
+            # "height": lambda x: minmax_scale(x, 0, max_height),
+            # "width": lambda x: minmax_scale(x, 0, max_width),
+            # "top": lambda x: minmax_scale(x, 0, max_y),
+            # "left": lambda x: minmax_scale(x, 0, max_x),
             "focused": truthy_embed,
             "tampered": truthy_embed,
             "depth": lambda x: minmax_scale(x, 0, max_depth),

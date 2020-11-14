@@ -10,6 +10,7 @@ gym
 networkx
 beautifulsoup4
 bpemb
+num2words
 git+https://github.com/openai/baselines.git@master#egg=baselines
 linkGrabber
 tensorboardX

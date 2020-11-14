@@ -33,6 +33,12 @@ def get_args():
         "--lr", type=float, default=7e-4, help="learning rate (default: 7e-4)"
     )
     parser.add_argument(
+        "--rdn-lr",
+        type=float,
+        default=7e-3,
+        help="learning rate for curiousity (default: 7e-3)",
+    )
+    parser.add_argument(
         "--eps",
         type=float,
         default=1e-5,

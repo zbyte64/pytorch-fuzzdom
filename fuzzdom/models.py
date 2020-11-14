@@ -24,6 +24,7 @@ from .distributions import NodeObjective
 from .functions import *
 from .nn import EdgeMask, EdgeAttrs
 from .factory_resolver import FactoryResolver
+from .domx import short_embed, text_embed_size
 
 
 class GraphPolicy(Policy):
@@ -107,7 +108,6 @@ class SoftActionDecoder(nn.Module):
             ["paste"],
         ]
         action_size = len(self.action_words)
-        from .domx import short_embed
 
         self.action_index = [i for i, a in enumerate(self.action_words) for word in a]
         self.action_vectors = torch.cat(
@@ -154,23 +154,7 @@ class SoftActionDecoder(nn.Module):
 
 
 def autoencoder_x(dom):
-    return torch.cat(
-        [
-            dom.text,
-            dom.value,
-            dom.tag,
-            dom.classes,
-            dom.radio_value,
-            dom.rx,
-            dom.ry,
-            dom.width,
-            dom.height,
-            dom.top,
-            dom.left,
-            dom.depth,
-        ],
-        dim=1,
-    )
+    return torch.cat([dom.text, dom.value, dom.tag, dom.classes], dim=1,)
 
 
 def domain(target_domain=None):
@@ -187,58 +171,50 @@ class GNNBase(NNBase):
     """
 
     def __init__(
-        self,
-        input_dim,
-        dom_encoder=None,
-        recurrent=False,
-        hidden_size=128,
-        text_embed_size=25,
+        self, input_dim, dom_encoder, recurrent=False, text_embed_size=text_embed_size,
     ):
+        action_one_hot_size = 4  # 5 to enable wait
+        encoder_size = dom_encoder.out_channels
+        # radio checked, focus, tampered
+        x_size = hidden_size = 3 + dom_encoder.out_channels
         super().__init__(recurrent, hidden_size, hidden_size)
         self.hidden_size = hidden_size
         self.text_embed_size = text_embed_size
 
         self.dom_encoder = dom_encoder
-
-        action_one_hot_size = 4  # 5 to enable wait
-        query_input_dim = 10 + 2 * text_embed_size
-        if dom_encoder:
-            query_input_dim += dom_encoder.out_channels
         self.attr_norm = nn.BatchNorm1d(text_embed_size)
         self.action_decoder = SoftActionDecoder()
-        self.global_conv = SAGEConv(query_input_dim, hidden_size - query_input_dim)
-        self.global_dropout = nn.Dropout(p=0.0)
 
         # paste  & copy have equal weight
         dom_ux_action_fn_size = action_one_hot_size - 1
         self.dom_ux_action_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, dom_ux_action_fn_size), "relu"),
+            init_xn(nn.Linear(encoder_size, dom_ux_action_fn_size), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(dom_ux_action_fn_size, dom_ux_action_fn_size), "linear"),
             nn.Softmax(dim=1),
         )
         transitivity_size = 4
         self.leaf_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=1, K=5
+            encoder_size, transitivity_size, mask_dim=1, K=5
         )
         self.goal_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=1, K=5
+            encoder_size, transitivity_size, mask_dim=1, K=5
         )
         self.value_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=1, K=5
+            encoder_size, transitivity_size, mask_dim=1, K=5
         )
 
         self.dom_description_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, text_embed_size), "relu"),
+            init_xn(nn.Linear(encoder_size, text_embed_size), "relu"),
             nn.ReLU(),
-            init_xu(nn.Linear(text_embed_size, text_embed_size), "tanh"),
+            init_xn(nn.Linear(text_embed_size, text_embed_size), "tanh"),
             nn.Tanh(),
         )
         # attr similarities
         self.attr_similarity_size = attr_similarity_size = 10
         # [ goal att, value ]
         self.dom_objective_attr_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, 2 * attr_similarity_size), "relu"),
+            init_xn(nn.Linear(encoder_size, 2 * attr_similarity_size), "relu"),
             nn.ReLU(),
             init_xn(
                 nn.Linear(2 * attr_similarity_size, 2 * attr_similarity_size), "sigmoid"
@@ -247,13 +223,13 @@ class GNNBase(NNBase):
         )
         # [ enabled ]
         self.dom_disabled_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, 8), "relu"),
+            init_xn(nn.Linear(encoder_size, 8), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(8, 1), "sigmoid"),
             nn.Sigmoid(),
         )
         self.dom_disabled_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=1, K=5
+            encoder_size, transitivity_size, mask_dim=1, K=5
         )
 
         self.objective_ux_action_fn = nn.Sequential(
@@ -268,23 +244,24 @@ class GNNBase(NNBase):
         self.ux_action_needs_value_fn = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 1), "sigmoid"), nn.Sigmoid()
         )
+        # add radio_value
         self.dom_needs_value_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, 8), "relu"),
+            init_xn(nn.Linear(encoder_size + 1, 8), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(8, 1), "sigmoid"),
             nn.Sigmoid(),
         )
         self.dom_disabled_value_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, 8), "relu"),
+            init_xn(nn.Linear(encoder_size, 8), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(8, 1), "sigmoid"),
             nn.Sigmoid(),
         )
         self.dom_disabled_value_prop = DirectionalPropagation(
-            hidden_size, transitivity_size, mask_dim=1, K=5
+            encoder_size, transitivity_size, mask_dim=1, K=5
         )
-        # has_value, order, is last, has focus, ux action
-        objective_active_size = 4 + action_one_hot_size
+        # has_value, order, is last, has focus, ux action, tampered
+        objective_active_size = 5 + action_one_hot_size
         if recurrent:
             # dom + pos + goal indicators
             goal_dom_size = hidden_size + objective_active_size
@@ -329,53 +306,31 @@ class GNNBase(NNBase):
         )
 
     @domain("dom")
-    def x(self, dom):
+    def x(self, dom, encoded_x):
         return torch.cat(
-            [
-                dom.tag,
-                dom.classes,
-                dom.radio_value,
-                dom.rx,
-                dom.ry,
-                dom.width,
-                dom.height,
-                dom.top,
-                dom.left,
-                dom.focused,
-                dom.tampered,
-                dom.depth,
-            ],
-            dim=1,
-        ).clamp(-1, 1)
+            [encoded_x, dom.radio_value, dom.focused, dom.tampered,], dim=1,
+        )
 
     @domain("dom")
     def encoded_x(self, dom):
-        if not self.dom_encoder:
-            return None
         with torch.no_grad():
             return torch.tanh(self.dom_encoder(autoencoder_x(dom), dom.dom_edge_index))
 
-    @domain("dom")
-    def full_x(self, dom, x, encoded_x):
-        if encoded_x is not None:
-            x = torch.cat([x, encoded_x], dim=1)
-
-        _add_x = self.global_dropout(self.global_conv(x, dom.spatial_edge_index))
-
-        full_x = torch.cat([x, _add_x], dim=1)
-        return full_x
-
     @domain("dom_leaf")
-    def leaves_att(self, dom, dom_leaf, full_x):
+    def leaves_att(self, dom, dom_leaf, encoded_x):
         leaf_t_mask = dom_leaf.mask.type(torch.float)
-        return self.leaf_prop(full_x, dom, dom_leaf, leaf_t_mask)
+        return self.leaf_prop(encoded_x, dom, dom_leaf, leaf_t_mask)
 
     @domain("dom")
-    def dom_ux_action(self, full_x):
+    def dom_ux_action(self, encoded_x):
         # infer action from dom nodes
-        dom_ux_action = self.dom_ux_action_fn(full_x)
+        dom_ux_action = self.dom_ux_action_fn(encoded_x)
         # for dom action input == paste
         return torch.cat([dom_ux_action[:, 0:], dom_ux_action[:, 1].view(-1, 1)], dim=1)
+
+    @domain("dom")
+    def dom_description(self, encoded_x):
+        return self.dom_description_fn(encoded_x)
 
     @domain("dom_leaf")
     def leaf_ux_action(self, dom_ux_action, dom_leaf):
@@ -385,7 +340,7 @@ class GNNBase(NNBase):
         )
 
     @domain("dom_field")
-    def obj_tag_similarities(self, dom, field, dom_field, full_x):
+    def obj_tag_similarities(self, dom, field, dom_field, dom_description):
         # compute an objective dependent dom feats
         # start with word embedding similarities
         obj_sim = lambda tag, obj: F.cosine_similarity(
@@ -393,8 +348,7 @@ class GNNBase(NNBase):
             safe_bc(field[obj], dom_field.field_index),
             dim=1,
         ).view(-1, 1)
-        dom_desc = self.dom_description_fn(full_x)
-        _dom_desc = safe_bc(dom_desc, dom_field.dom_index)
+        _dom_desc = safe_bc(dom_description, dom_field.dom_index)
         dom_desc_key_sim = F.cosine_similarity(
             _dom_desc, safe_bc(field.key, dom_field.field_index), dim=1
         ).view(-1, 1)
@@ -438,14 +392,14 @@ class GNNBase(NNBase):
         return obj_tag_similarities
 
     @domain("dom_field")
-    def dom_obj_attr(self, dom_field, full_x):
+    def dom_obj_attr(self, dom_field, encoded_x):
         """
         Compute attribute affinity to goal target or completion
         Returns: [:,:,0] = goal target. [:,:,1] = goal completion.
         [0,1]
         """
-        dom_obj_attr = self.dom_objective_attr_fn(full_x).view(
-            full_x.shape[0], self.attr_similarity_size, 2
+        dom_obj_attr = self.dom_objective_attr_fn(encoded_x).view(
+            encoded_x.shape[0], self.attr_similarity_size, 2
         )
         # dom_obj_attr = F.softmax(dom_obj_attr, dim=2)
         return safe_bc(dom_obj_attr, dom_field.dom_index)
@@ -458,7 +412,7 @@ class GNNBase(NNBase):
         )
 
     @domain("dom_field")
-    def obj_att_input(self, dom, dom_field, full_x, dom_obj_int):
+    def obj_att_input(self, dom, dom_field, encoded_x, dom_obj_int):
         obj_att_input = torch.relu(
             (dom_obj_int[:, :, 0]).max(dim=1, keepdim=True).values
         )
@@ -466,7 +420,7 @@ class GNNBase(NNBase):
         if SAFETY:
             assert global_max_pool(obj_att_input, dom_field.batch).min().item() > 0
 
-        return self.goal_prop(full_x, dom, dom_field, obj_att_input)
+        return self.goal_prop(encoded_x, dom, dom_field, obj_att_input)
 
     @domain("field")
     def obj_ux_action(self, field):
@@ -542,20 +496,24 @@ class GNNBase(NNBase):
         return dom_interest * _ac_value
 
     @domain("dom")
-    def dom_disabled_value_mask(self, dom, full_x):
-        dom_disabled = self.dom_disabled_value_fn(full_x)
+    def dom_disabled_value_mask(self, dom, encoded_x):
+        dom_disabled = self.dom_disabled_value_fn(encoded_x)
         # invert after propagation
-        return 1 - self.dom_disabled_value_prop(full_x, dom, dom, dom_disabled)
+        return 1 - self.dom_disabled_value_prop(encoded_x, dom, dom, dom_disabled)
 
     @domain("dom_field")
-    def value_mask(self, dom, dom_field, full_x, dom_obj_int, dom_disabled_value_mask):
+    def value_mask(
+        self, dom, dom_field, encoded_x, dom_obj_int, dom_disabled_value_mask
+    ):
         """
         compute objective completeness with goal word similarities
         [0 - 1]
         """
+        # dom.radio_value
         obj_value_mask = (dom_obj_int[:, :, 1]).max(dim=1, keepdim=True).values
         _dom_value_mask = safe_bc(dom_disabled_value_mask, dom_field.dom_index)
-        non_value = self.dom_needs_value_fn(full_x)
+        x_needs_value = torch.cat([encoded_x, dom.radio_value], dim=1)
+        non_value = self.dom_needs_value_fn(x_needs_value)
         _non_value = safe_bc(non_value, dom_field.dom_index)
         value_mask = (
             torch.cat([obj_value_mask, _non_value], dim=1)
@@ -563,18 +521,18 @@ class GNNBase(NNBase):
             .values
         )
         value_mask = (
-            self.value_prop(full_x, dom, dom_field, value_mask) * _dom_value_mask
+            self.value_prop(encoded_x, dom, dom_field, value_mask) * _dom_value_mask
         )
         return value_mask
 
     @domain("dom")
-    def disabled_mask(self, dom, full_x):
+    def disabled_mask(self, dom, encoded_x):
         """
         determine if a node is active/interesting
         """
-        mask = self.dom_disabled_fn(full_x)
+        mask = self.dom_disabled_fn(encoded_x)
         # invert after positive propagation
-        return 1 - self.dom_disabled_prop(full_x, dom, dom, mask)
+        return 1 - self.dom_disabled_prop(encoded_x, dom, dom, mask)
 
     @domain("action")
     def action_status_indicators(
@@ -599,7 +557,8 @@ class GNNBase(NNBase):
         dom_interest_norm,
         action_status_indicators,
         obj_ux_action,
-        full_x,
+        encoded_x,
+        x,
         rnn_hxs,
         masks,
         resolver,
@@ -613,6 +572,7 @@ class GNNBase(NNBase):
         )
 
         dom_obj_focus = safe_bc(dom.focused, action.dom_index)
+        dom_obj_tampered = safe_bc(dom.tampered, action.dom_index)
 
         # pack on order embed and goal focus
         obj_indicator_order = torch.cat(
@@ -621,6 +581,9 @@ class GNNBase(NNBase):
                 field.order,
                 field.is_last,
                 global_max_pool(dom_obj_focus * dom_interest_norm, action.field_index),
+                global_max_pool(
+                    dom_obj_tampered * dom_interest_norm, action.field_index
+                ),
                 obj_ux_action,
             ],
             dim=1,
@@ -629,7 +592,7 @@ class GNNBase(NNBase):
         if self.is_recurrent:
             goal_dom_input = torch.cat(
                 [
-                    safe_bc(full_x, dom_field.dom_index),
+                    safe_bc(x, dom_field.dom_index),
                     safe_bc(obj_indicator_order, dom_field.field_index),
                 ],
                 dim=1,
@@ -727,8 +690,7 @@ class GNNBase(NNBase):
 class Instructor(GNNBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # tag and classes already included in full_x
-        self.instructor_size = self.hidden_size + self.text_embed_size * 2
+        self.instructor_size = self.hidden_size + self.dom_encoder.in_channels
         self.key_fn = GlobalAttention(
             nn.Sequential(
                 init_xn(nn.Linear(self.instructor_size, self.text_embed_size), "relu"),
@@ -745,7 +707,6 @@ class Instructor(GNNBase):
                 nn.ReLU(),
             )
         )
-        from .domx import short_embed
 
         self.target_words = [
             "click",
@@ -771,16 +732,16 @@ class Instructor(GNNBase):
             init_xn(nn.Linear(self.text_embed_size, 4)),
         )
 
-    def field(self, dom, _field, full_x):
+    def field(self, dom, _field, x):
         batch_size = _field.batch.shape[0]
-        device = full_x.device
-        # tag and classes already included in the front
-        fuller_x = torch.cat([dom.text, dom.value, full_x], dim=1)
-        key_softmax_x = global_max_pool(self.key_softmax_fn(fuller_x), dom.batch)
+        device = x.device
+        # include tag and classes in the front
+        x = torch.cat([autoencoder_x(dom), x], dim=1)
+        key_softmax_x = global_max_pool(self.key_softmax_fn(x), dom.batch)
         key_softmax = F.softmax(key_softmax_x, dim=1).repeat_interleave(
             self.text_embed_size, dim=1
         )
-        key = self.key_fn(fuller_x, dom.batch)[:, : self.text_embed_size * 4]
+        key = self.key_fn(x, dom.batch)[:, : self.text_embed_size * 4]
         key = torch.cat(
             [key, self.other_values.to(device).repeat(batch_size, 1)], dim=1
         )
@@ -793,11 +754,11 @@ class Instructor(GNNBase):
         assert _field.key.shape == _field.query.shape, str(
             (_field.key.shape, _field.query.shape)
         )
-        query_softmax_x = global_max_pool(self.query_softmax_fn(fuller_x), dom.batch)
+        query_softmax_x = global_max_pool(self.query_softmax_fn(x), dom.batch)
         query_softmax = F.softmax(query_softmax_x, dim=1).repeat_interleave(
             self.text_embed_size, dim=1
         )
-        query = self.query_fn(fuller_x, dom.batch)[:, : self.text_embed_size * 4]
+        query = self.query_fn(x, dom.batch)[:, : self.text_embed_size * 4]
         _field.query = (
             (query * query_softmax).view(batch_size, self.text_embed_size, 4).sum(dim=2)
         )
