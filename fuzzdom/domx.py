@@ -11,7 +11,7 @@ import re
 text_embed_size = 300
 
 bpemb_en = BPEmb(lang="en", dim=text_embed_size)
-word_or_num_re = r"(?P<num>[0-9]+)|(?P<word>[\w]+)"
+word_or_num_re = r"(?P<num>[0-9]+)|(?P<word>[^0-9]+)"
 
 
 def _chunk_to_word(chunk):
@@ -22,13 +22,13 @@ def _chunk_to_word(chunk):
     return s
 
 
-def embed(x, numeral_re=r"[0-9]+"):
+def embed(x):
     if x is not None:
         if not isinstance(x, str):
             x = str(x)
         # https://github.com/bheinzerling/bpemb/issues/20
         stream = map(_chunk_to_word, re.finditer(word_or_num_re, x))
-        x = " ".join(stream)
+        x = "".join(stream)
         return bpemb_en.embed(x)
 
 
