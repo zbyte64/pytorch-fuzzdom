@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from torch_geometric.data import Data
+import random
 
 from .data import TupleBatch
 
@@ -54,3 +55,23 @@ class StorageReceipt:
         discard = current - keep
         for d in discard:
             del self._data[d]
+
+
+class RandomizedReplayStorage:
+    def __init__(self, identifier, alpha=0.5, device="cpu"):
+        self.identifier = identifier
+        self.device = device
+        self.alpha = alpha
+        self._data = dict()
+
+    def insert(self, states):
+        for id, state in zip(map(self.identifier, states), states):
+            self._data[id] = state
+
+    def next(self):
+        sample_size = int(len(self._data) * self.alpha)
+        if sample_size < 1:
+            return
+        ids = random.sample(list(self._data.keys()), sample_size)
+        for id in ids:
+            yield self._data.pop(id).to(self.device)

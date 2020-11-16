@@ -6,6 +6,7 @@ from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from a2c_ppo_acktr import algo, utils
 from fuzzdom.models import GraphPolicy, Instructor, autoencoder_x
 from fuzzdom.env import CrawlTaskEnvironment, open_driver
+from fuzzdom.storage import RandomizedReplayStorage
 from fuzzdom.rdn import make_rdn_vec_envs, RDNScorer, NormalizeScore
 from fuzzdom.factory_resolver import FactoryResolver
 from torch_geometric.data import Data, Batch
@@ -100,6 +101,13 @@ def autoencoder_optimizer(autoencoder, args):
     return torch.optim.Adam(autoencoder.parameters(), lr=args.lr)
 
 
+def autoencoder_storage(device, rdn_scorer):
+    identifier = lambda dom: hash(rdn_scorer.actual_dom(dom, autoencoder_x(dom)))
+    return RandomizedReplayStorage(
+        lambda dom: identifier(dom.to(device)), device=device
+    )
+
+
 def optimize(
     args,
     actor_critic,
@@ -114,6 +122,7 @@ def optimize(
     filter_leaves,
     device,
     resolver,
+    autoencoder_storage,
 ):
     print("optimizing rdn")
     with torch.no_grad():
@@ -129,6 +138,14 @@ def optimize(
         args.use_proper_time_limits,
     )
     value_loss, action_loss, dist_entropy = agent.update(rollouts)
+
+    ae_good_values = list(
+        filter(
+            lambda dom: remove_self_loops(dom.dom_edge_index)[0].shape[1] > 4,
+            map(lambda state: state[0], receipts._data.values()),
+        )
+    )
+    autoencoder_storage.insert(ae_good_values)
 
     mini_batch_size = args.num_mini_batch
     sampler = BatchSampler(
@@ -163,23 +180,14 @@ def optimize(
         del ds, dom, logs
 
         # train autoencoder
-        for i, rdn_score in zip(subset, rdn_scores.flatten().tolist()):
-            # not ineresting: skip if rdn score is well below average
-            # if rdn_score < rdn_cutoff:
-            #    continue
-            data = receipts[i][0]
-            del data.batch
-            # skip empty/small edges
-            check, _ = remove_self_loops(data.dom_edge_index)
-            if check.shape[1] < 5:
-                continue
-            # no validation ?
-            # data = train_test_split_edges(data)
-            x = autoencoder_x(data)
-            z = autoencoder.encode(x, data.dom_edge_index)
-            autoencoder_loss = autoencoder.recon_loss(z, data.dom_edge_index)
-            autoencoder_loss.backward()
-            ae_values.append(autoencoder_loss.clone().detach().view(1))
+    for data in autoencoder_storage.next():
+        # no validation ?
+        # data = train_test_split_edges(data)
+        x = autoencoder_x(data)
+        z = autoencoder.encode(x, data.dom_edge_index)
+        autoencoder_loss = autoencoder.recon_loss(z, data.dom_edge_index)
+        autoencoder_loss.backward()
+        ae_values.append(autoencoder_loss.clone().detach().view(1))
     autoencoder_optimizer.step()
     autoencoder.eval()
 

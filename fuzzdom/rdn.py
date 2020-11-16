@@ -90,7 +90,12 @@ class RDNScorer(torch.nn.Module):
 
     def actual_dom(self, dom, x):
         with torch.no_grad():
-            return global_max_pool(self.dom_target(x, dom.dom_edge_index), dom.batch)
+            batch = (
+                dom.batch
+                if "batch" in dom
+                else torch.zeros(x.shape[0], dtype=torch.long).to(x.device)
+            )
+            return global_max_pool(self.dom_target(x, dom.dom_edge_index), batch)
 
     def guess_logs(self, logs):
         return global_max_pool(self.log_guesser(logs.x), logs.batch)
