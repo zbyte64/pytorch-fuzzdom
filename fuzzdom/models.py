@@ -731,6 +731,7 @@ class Instructor(GNNBase):
             nn.ReLU(),
             init_xn(nn.Linear(self.text_embed_size, 4)),
         )
+        self.norm_query = InstanceNorm(1)
 
     def field(self, dom, _field, x):
         batch_size = _field.batch.shape[0]
@@ -759,9 +760,16 @@ class Instructor(GNNBase):
             self.text_embed_size, dim=1
         )
         query = self.query_fn(x, dom.batch)[:, : self.text_embed_size * 4]
-        _field.query = (
-            (query * query_softmax).view(batch_size, self.text_embed_size, 4).sum(dim=2)
+        field_query = (
+            (query * query_softmax)
+            .view(batch_size, self.text_embed_size, 4)
+            .sum(dim=2)
+            .view(batch_size * self.text_embed_size, 1)
         )
+
+        _field.query = self.norm_query(
+            field_query  # , torch.arange(0, field_query.shape[0], dtype=torch.long)
+        ).view(batch_size, self.text_embed_size)
         with torch.no_grad():
             if (
                 _field.query.clone().detach().requires_grad_(False).max().min().item()

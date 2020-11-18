@@ -58,15 +58,16 @@ class StorageReceipt:
 
 
 class RandomizedReplayStorage:
-    def __init__(self, identifier, alpha=0.5, device="cpu"):
+    def __init__(self, identifier, alpha=0.5, storage_device="cpu", device="cpu"):
         self.identifier = identifier
         self.device = device
+        self.storage_device = storage_device
         self.alpha = alpha
         self._data = dict()
 
     def insert(self, states):
         for id, state in zip(map(self.identifier, states), states):
-            self._data[id] = state
+            self._data[id] = tuple(map(lambda x: x.to(self.storage_device), state))
 
     def next(self):
         sample_size = int(len(self._data) * self.alpha)
@@ -74,4 +75,4 @@ class RandomizedReplayStorage:
             return
         ids = random.sample(list(self._data.keys()), sample_size)
         for id in ids:
-            yield self._data.pop(id).to(self.device)
+            yield tuple(map(lambda x: x.to(self.device), self._data.pop(id)))

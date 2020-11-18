@@ -45,11 +45,22 @@ class ModelBasedLeafFilter:
 
 
 def autoencoder_score_norm():
-    return NormalizeScore(shift_mean=True, scale_by=0.25, clamp_by=(0, 0.25), alpha=0.9)
+    return NormalizeScore(shift_mean=True, scale_by=0.5, clamp_by=(0, 0.5), alpha=0.5)
 
 
 def rdn_scorer(device, text_embed_size, autoencoder_size, encoder_size):
-    return RDNScorer(autoencoder_size, encoder_size).to(device).eval()
+    return (
+        RDNScorer(
+            autoencoder_size,
+            encoder_size,
+            shift_mean=True,
+            scale_by=0.5,
+            clamp_by=(0, 0.5),
+            alpha=0.5,
+        )
+        .to(device)
+        .eval()
+    )
 
 
 def filter_leaves(actor_critic):
@@ -104,7 +115,17 @@ def autoencoder_optimizer(autoencoder, args):
 def autoencoder_storage(device, rdn_scorer):
     identifier = lambda dom: hash(rdn_scorer.actual_dom(dom, autoencoder_x(dom)))
     return RandomizedReplayStorage(
-        lambda dom: identifier(dom.to(device)), device=device
+        lambda state: identifier(state[0].to(device)), device=device, alpha=0.33
+    )
+
+
+def rdn_storage(device, rdn_scorer):
+    identifier = lambda dom, logs: hash(
+        rdn_scorer.actual_dom(dom, autoencoder_x(dom))
+    ) + hash(rdn_scorer.actual_logs(logs))
+    return RandomizedReplayStorage(
+        lambda state: identifier(state[0].to(device), state[1].to(device)),
+        # device=device,
     )
 
 
@@ -123,6 +144,7 @@ def optimize(
     device,
     resolver,
     autoencoder_storage,
+    rdn_storage,
 ):
     print("optimizing rdn")
     with torch.no_grad():
@@ -140,49 +162,47 @@ def optimize(
     value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
     ae_good_values = list(
-        filter(
-            lambda dom: remove_self_loops(dom.dom_edge_index)[0].shape[1] > 4,
-            map(lambda state: state[0], receipts._data.values()),
+        map(
+            lambda dom: (dom,),
+            filter(
+                lambda dom: remove_self_loops(dom.dom_edge_index)[0].shape[1] > 4,
+                map(lambda state: state[0], receipts._data.values()),
+            ),
         )
     )
     autoencoder_storage.insert(ae_good_values)
+    del ae_good_values
+
+    rdn_values = list(
+        map(lambda state: (state[0], state[-1]), receipts._data.values()),
+    )
+    rdn_storage.insert(rdn_values)
+    del rdn_values
 
     mini_batch_size = args.num_mini_batch
-    sampler = BatchSampler(
-        SubsetRandomSampler(rollouts.obs.flatten().tolist()),
-        mini_batch_size,
-        drop_last=True,
-    )
+    rdn_sample = list(rdn_storage.next())
+    rdn_dom = Batch.from_data_list(list(map(lambda x: x[0], rdn_sample))).to(device)
+    rdn_logs = Batch.from_data_list(list(map(lambda x: x[1], rdn_sample))).to(device)
 
     rdn_scorer.train()
     rdn_optimizer.zero_grad()
     autoencoder.train()
     autoencoder_optimizer.zero_grad()
     autoencoder_loss = None
+    rdn_loss = None
     ae_values = list()
-    rdn_values = list()
-    rdn_cutoff = (
-        rdn_scorer.score_normalizer.mean - rdn_scorer.score_normalizer.std_dev
-        if rdn_scorer.score_normalizer.mean is not None
-        else 0
-    )
 
-    for subset in sampler:
-        ds = receipts.redeem(torch.tensor(subset))
-        dom = ds[0]
-        logs = ds[-1]
-        # train rdn_scorer
-        rdn_loss, rdn_scores = rdn_scorer.loss(dom, logs)
-        rdn_loss.backward()
-        rdn_values.append(rdn_scores)
+    # train rdn_scorer
+    # print(rdn_dom)
+    # print(rdn_logs)
+    rdn_loss, rdn_scores = rdn_scorer.loss(rdn_dom, rdn_logs)
+    rdn_loss.backward()
 
-        # free up memory
-        del ds, dom, logs
-
-        # train autoencoder
+    # train autoencoder
     for data in autoencoder_storage.next():
         # no validation ?
         # data = train_test_split_edges(data)
+        data = data[0]
         x = autoencoder_x(data)
         z = autoencoder.encode(x, data.dom_edge_index)
         autoencoder_loss = autoencoder.recon_loss(z, data.dom_edge_index)
@@ -193,7 +213,7 @@ def optimize(
 
     rdn_optimizer.step()
     rdn_scorer.eval()
-    rdn_scorer.score_normalizer.update(torch.cat(rdn_values))
+    rdn_scorer.score_normalizer.update(rdn_scores)
     if len(ae_values) >= mini_batch_size:
         autoencoder_score_norm.update(torch.cat(ae_values))
 

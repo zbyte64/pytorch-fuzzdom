@@ -56,7 +56,14 @@ class NormalizeScore:
 
 class RDNScorer(torch.nn.Module):
     def __init__(
-        self, in_channels=50, out_channels=32, text_embed_size=text_embed_size
+        self,
+        in_channels=50,
+        out_channels=32,
+        text_embed_size=text_embed_size,
+        shift_mean=False,
+        scale_by=1,
+        clamp_by=(0, 1),
+        alpha=0.5,
     ):
         super().__init__()
         self.dom_guesser = Encoder("GAE", in_channels, out_channels)
@@ -74,7 +81,7 @@ class RDNScorer(torch.nn.Module):
             )
         )
         self.score_normalizer = NormalizeScore(
-            shift_mean=False, scale_by=0.75, clamp_by=(0, 0.75), alpha=0.5
+            shift_mean=shift_mean, scale_by=scale_by, clamp_by=clamp_by, alpha=alpha
         )
 
     def x(self, dom):
@@ -102,7 +109,12 @@ class RDNScorer(torch.nn.Module):
 
     def actual_logs(self, logs):
         with torch.no_grad():
-            return global_max_pool(self.log_target(logs.x), logs.batch)
+            batch = (
+                logs.batch
+                if "batch" in logs
+                else torch.zeros(logs.x.shape[0], dtype=torch.long).to(logs.x.device)
+            )
+            return global_max_pool(self.log_target(logs.x), batch)
 
     def raw_score(self, guess_logs, actual_logs, guess_dom, actual_dom):
         return F.pairwise_distance(actual_dom, guess_dom) + F.pairwise_distance(
