@@ -223,7 +223,7 @@ class GNNBase(NNBase):
         )
         # [ enabled ]
         self.dom_disabled_fn = nn.Sequential(
-            init_xn(nn.Linear(encoder_size, 8), "relu"),
+            init_xn(nn.Linear(x_size, 8), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(8, 1), "sigmoid"),
             nn.Sigmoid(),
@@ -244,15 +244,14 @@ class GNNBase(NNBase):
         self.ux_action_needs_value_fn = nn.Sequential(
             init_xn(nn.Linear(action_one_hot_size, 1), "sigmoid"), nn.Sigmoid()
         )
-        # add radio_value
         self.dom_needs_value_fn = nn.Sequential(
-            init_xn(nn.Linear(encoder_size + 1, 8), "relu"),
+            init_xn(nn.Linear(x_size, 8), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(8, 1), "sigmoid"),
             nn.Sigmoid(),
         )
         self.dom_disabled_value_fn = nn.Sequential(
-            init_xn(nn.Linear(encoder_size, 8), "relu"),
+            init_xn(nn.Linear(x_size, 8), "relu"),
             nn.ReLU(),
             init_xn(nn.Linear(8, 1), "sigmoid"),
             nn.Sigmoid(),
@@ -496,24 +495,22 @@ class GNNBase(NNBase):
         return dom_interest * _ac_value
 
     @domain("dom")
-    def dom_disabled_value_mask(self, dom, encoded_x):
-        dom_disabled = self.dom_disabled_value_fn(encoded_x)
+    def dom_disabled_value_mask(self, dom, x, encoded_x):
+        dom_disabled = self.dom_disabled_value_fn(x)
         # invert after propagation
         return 1 - self.dom_disabled_value_prop(encoded_x, dom, dom, dom_disabled)
 
     @domain("dom_field")
     def value_mask(
-        self, dom, dom_field, encoded_x, dom_obj_int, dom_disabled_value_mask
+        self, dom, dom_field, encoded_x, x, dom_obj_int, dom_disabled_value_mask
     ):
         """
         compute objective completeness with goal word similarities
         [0 - 1]
         """
-        # dom.radio_value
         obj_value_mask = (dom_obj_int[:, :, 1]).max(dim=1, keepdim=True).values
         _dom_value_mask = safe_bc(dom_disabled_value_mask, dom_field.dom_index)
-        x_needs_value = torch.cat([encoded_x, dom.radio_value], dim=1)
-        non_value = self.dom_needs_value_fn(x_needs_value)
+        non_value = self.dom_needs_value_fn(x)
         _non_value = safe_bc(non_value, dom_field.dom_index)
         value_mask = (
             torch.cat([obj_value_mask, _non_value], dim=1)
@@ -526,11 +523,11 @@ class GNNBase(NNBase):
         return value_mask
 
     @domain("dom")
-    def disabled_mask(self, dom, encoded_x):
+    def disabled_mask(self, dom, encoded_x, x):
         """
         determine if a node is active/interesting
         """
-        mask = self.dom_disabled_fn(encoded_x)
+        mask = self.dom_disabled_fn(x)
         # invert after positive propagation
         return 1 - self.dom_disabled_prop(encoded_x, dom, dom, mask)
 
