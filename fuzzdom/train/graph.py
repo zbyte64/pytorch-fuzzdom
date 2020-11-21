@@ -9,7 +9,6 @@ import gym
 import numpy as np
 import torch
 import torch_geometric
-from torch_geometric.nn import GAE
 
 from tensorboardX import SummaryWriter
 from a2c_ppo_acktr import algo, utils
@@ -18,7 +17,7 @@ from a2c_ppo_acktr.storage import RolloutStorage
 
 from fuzzdom.factory_resolver import FactoryResolver
 from fuzzdom.env import MiniWoBGraphEnvironment, ManagedWebInterface
-from fuzzdom.models import GNNBase, GraphPolicy, Encoder
+from fuzzdom.models import GNNBase, GraphPolicy, DualGAE
 from fuzzdom.domx import text_embed_size
 from fuzzdom.storage import StorageReceipt
 from fuzzdom.vec_env import make_vec_envs
@@ -83,7 +82,7 @@ def device(args):
 def autoencoder(args, text_embed_size, encoder_size, autoencoder_size):
     if isinstance(args.load_autoencoder, str):
         return torch.load(args.load_autoencoder)
-    return GAE(Encoder("GAE", autoencoder_size, encoder_size))
+    return DualGAE(autoencoder_size, encoder_size)
 
 
 def dom_encoder(autoencoder):

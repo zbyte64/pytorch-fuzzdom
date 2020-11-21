@@ -12,6 +12,7 @@ from torch_geometric.nn import (
     BatchNorm,
     GraphSizeNorm,
     InstanceNorm,
+    GAE,
 )
 import torch.nn.functional as F
 from torch_geometric.utils import add_self_loops
@@ -154,7 +155,10 @@ class SoftActionDecoder(nn.Module):
 
 
 def autoencoder_x(dom):
-    return torch.cat([dom.text, dom.value, dom.tag, dom.classes], dim=1,)
+    return torch.cat(
+        [dom.text, dom.value, dom.tag, dom.classes],
+        dim=1,
+    )
 
 
 def domain(target_domain=None):
@@ -171,7 +175,11 @@ class GNNBase(NNBase):
     """
 
     def __init__(
-        self, input_dim, dom_encoder, recurrent=False, text_embed_size=text_embed_size,
+        self,
+        input_dim,
+        dom_encoder,
+        recurrent=False,
+        text_embed_size=text_embed_size,
     ):
         action_one_hot_size = 4  # 5 to enable wait
         encoder_size = dom_encoder.out_channels
@@ -307,13 +315,23 @@ class GNNBase(NNBase):
     @domain("dom")
     def x(self, dom, encoded_x):
         return torch.cat(
-            [encoded_x, dom.radio_value, dom.focused, dom.tampered,], dim=1,
+            [
+                encoded_x,
+                dom.radio_value,
+                dom.focused,
+                dom.tampered,
+            ],
+            dim=1,
         )
 
     @domain("dom")
     def encoded_x(self, dom):
         with torch.no_grad():
-            return torch.tanh(self.dom_encoder(autoencoder_x(dom), dom.dom_edge_index))
+            return torch.tanh(
+                self.dom_encoder(
+                    autoencoder_x(dom), dom.dom_edge_index, dom.pos_edge_index
+                )
+            )
 
     @domain("dom_leaf")
     def leaves_att(self, dom, dom_leaf, encoded_x):
@@ -804,24 +822,48 @@ class Instructor(GNNBase):
             )
 
 
-class Encoder(nn.Module):
-    def __init__(self, model, in_channels, out_channels):
+class DualGAE(nn.Module):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.conv1 = GCNConv(in_channels, 2 * out_channels)
-        if model in ["GAE"]:
-            self.conv2 = GCNConv(2 * out_channels, out_channels)
-        elif model in ["VGAE"]:
-            self.conv_mu = GCNConv(2 * out_channels, out_channels)
-            self.conv_logvar = GCNConv(2 * out_channels, out_channels)
+        self.edge_index_1_encoder = Encoder(in_channels, out_channels // 2)
+        self.edge_index_2_encoder = Encoder(in_channels, out_channels // 2)
+        self.ae_1 = GAE(self.edge_index_1_encoder)
+        self.ae_2 = GAE(self.edge_index_2_encoder)
+
+    def encode(self, x, edge_index_1, edge_index_2):
+        return torch.cat(
+            [
+                self.encoder_1.encode(x, edge_index_1),
+                self.encoder_2.encode(x, edge_index_2),
+            ],
+            dim=1,
+        )
+
+    def decode(self, z, edge_index_1, edge_index_2):
+        z1, z2 = z[:, : self.out_channels // 2], z[:, self.out_channels // 2 :]
+        return torch.cat(
+            [self.ae_1.decode(z1, edge_index_1), self.ae_2.decode(z2, edge_index_2)],
+            dim=1,
+        )
+
+    def recon_loss(self, z, edge_index_1, edge_index_2):
+        return self.ae_1.recon_loss(z, edge_index_1) + self.ae_2.recon_loss(
+            z, edge_index_2
+        )
+
+
+class Encoder(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.conv2 = GCNConv(2 * out_channels, out_channels)
 
     def forward(self, x, edge_index):
         x = torch.relu(self.conv1(x, edge_index))
-        if hasattr(self, "conv2"):
-            return self.conv2(x, edge_index)
-        else:
-            return self.conv_mu(x, edge_index), self.conv_logvar(x, edge_index)
+        return self.conv2(x, edge_index)
 
 
 class WoBObservationEncoder(nn.Module):
