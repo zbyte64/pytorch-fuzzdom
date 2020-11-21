@@ -329,7 +329,7 @@ class GNNBase(NNBase):
         with torch.no_grad():
             return torch.tanh(
                 self.dom_encoder(
-                    autoencoder_x(dom), dom.dom_edge_index, dom.pos_edge_index
+                    autoencoder_x(dom), dom.dom_edge_index, dom.spatial_edge_index
                 )
             )
 
@@ -471,9 +471,8 @@ class GNNBase(NNBase):
             dom_field.dom_index,
         )
         obj_int = global_max_pool(obj_att_input, dom_field.dom_index)
-        active_mask = 1 - disabled_mask
         return (
-            ux_action_consensus.max(dim=1, keepdim=True).values * active_mask * obj_int
+            ux_action_consensus.max(dim=1, keepdim=True).values * disabed_mask * obj_int
         )
 
     @domain("action")
@@ -835,8 +834,8 @@ class DualGAE(nn.Module):
     def encode(self, x, edge_index_1, edge_index_2):
         return torch.cat(
             [
-                self.encoder_1.encode(x, edge_index_1),
-                self.encoder_2.encode(x, edge_index_2),
+                self.ae_1.encode(x, edge_index_1),
+                self.ae_2.encode(x, edge_index_2),
             ],
             dim=1,
         )
@@ -852,6 +851,9 @@ class DualGAE(nn.Module):
         return self.ae_1.recon_loss(z, edge_index_1) + self.ae_2.recon_loss(
             z, edge_index_2
         )
+    
+    def forward(self, z, edge_index_1, edge_index_2):
+        return self.encode(z, edge_index_1, edge_index_2)
 
 
 class Encoder(nn.Module):
@@ -859,6 +861,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.conv1 = GCNConv(in_channels, 2 * out_channels)
         self.conv2 = GCNConv(2 * out_channels, out_channels)
 
     def forward(self, x, edge_index):

@@ -86,7 +86,7 @@ def autoencoder(args, text_embed_size, encoder_size, autoencoder_size):
 
 
 def dom_encoder(autoencoder):
-    return autoencoder.encoder if autoencoder else None
+    return autoencoder
 
 
 def actor_critic_base():

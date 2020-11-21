@@ -66,8 +66,8 @@ class RDNScorer(torch.nn.Module):
         alpha=0.5,
     ):
         super().__init__()
-        self.dom_guesser = Encoder("GAE", in_channels, out_channels)
-        self.dom_target = freeze_model(Encoder("GAE", in_channels, out_channels))
+        self.dom_guesser = Encoder(in_channels, out_channels)
+        self.dom_target = freeze_model(Encoder(in_channels, out_channels))
         self.log_guesser = nn.Sequential(
             init_xu(nn.Linear(text_embed_size * 2, text_embed_size), "relu"),
             nn.ReLU(),
@@ -173,8 +173,8 @@ class AEScorerGymWrapper(gym.Wrapper):
             if check.shape[1] < 5:
                 return 0
             x = autoencoder_x(dom)
-            z = self.autoencoder.encode(x, dom.dom_edge_index)
-            score = self.autoencoder.recon_loss(z, dom.dom_edge_index)
+            z = self.autoencoder.encode(x, dom.dom_edge_index, dom.spatial_edge_index)
+            score = self.autoencoder.recon_loss(z, dom.dom_edge_index, dom.spatial_edge_index)
             score = self.score_normalizer.scale(score)
             score = score.item()
             print("AE SCORE", score)
