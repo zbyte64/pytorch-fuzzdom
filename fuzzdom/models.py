@@ -55,12 +55,19 @@ class GraphPolicy(Policy):
 class DirectionalPropagation(nn.Module):
     def __init__(self, hidden_size, transitivity_size, mask_dim, K):
         super().__init__()
-        self.dom_transitivity_fn = EdgeAttrs(hidden_size, transitivity_size)
-        self.dom_edge_mask = EdgeMask(1 + transitivity_size, mask_dim, K)
-        self.pos_edge_mask = EdgeMask(4 + transitivity_size, mask_dim, K)
+        self.dom_transitivity_fn = EdgeAttrs(
+            input_dim=hidden_size, out_dim=transitivity_size, prior_edge_size=1
+        )
+        self.spatial_transitivity_fn = EdgeAttrs(
+            input_dim=hidden_size, out_dim=transitivity_size, prior_edge_size=4
+        )
+        self.dom_edge_mask = EdgeMask(transitivity_size, mask_dim, K)
+        self.pos_edge_mask = EdgeMask(transitivity_size, mask_dim, K)
 
     def spatial_mask(self, x, dom, projection, mask, resolver):
-        spatial_edge_trans = self.dom_transitivity_fn(x, dom.spatial_edge_index)
+        spatial_edge_trans = self.spatial_transitivity_fn(
+            x, dom.spatial_edge_index, dom.spatial_edge_attr
+        )
         if projection is not dom:
             _spatial_edge_trans = safe_bc_edges(
                 spatial_edge_trans, projection.br_spatial_edge_index
@@ -68,15 +75,15 @@ class DirectionalPropagation(nn.Module):
         else:
             _spatial_edge_trans = spatial_edge_trans
         pos_mask, pos_mask_ew = self.pos_edge_mask(
-            torch.cat([projection.spatial_edge_attr, _spatial_edge_trans], dim=1),
-            mask,
-            projection.spatial_edge_index,
+            _spatial_edge_trans, mask, projection.spatial_edge_index,
         )
         resolver["spatial_edge_weights"] = pos_mask_ew
         return pos_mask
 
     def dom_mask(self, x, dom, projection, mask, resolver):
-        dom_edge_trans = self.dom_transitivity_fn(x, dom.dom_edge_index)
+        dom_edge_trans = self.dom_transitivity_fn(
+            x, dom.dom_edge_index, dom.dom_edge_attr
+        )
         if projection is not dom:
             _dom_edge_trans = safe_bc_edges(
                 dom_edge_trans, projection.br_dom_edge_index
@@ -84,9 +91,7 @@ class DirectionalPropagation(nn.Module):
         else:
             _dom_edge_trans = dom_edge_trans
         dom_mask, dom_mask_ew = self.dom_edge_mask(
-            torch.cat([projection.dom_edge_attr, _dom_edge_trans], dim=1),
-            mask,
-            projection.dom_edge_index,
+            _dom_edge_trans, mask, projection.dom_edge_index,
         )
         resolver["dom_edge_weights"] = dom_mask_ew
         return dom_mask
@@ -155,10 +160,7 @@ class SoftActionDecoder(nn.Module):
 
 
 def autoencoder_x(dom):
-    return torch.cat(
-        [dom.text, dom.value, dom.tag, dom.classes],
-        dim=1,
-    )
+    return torch.cat([dom.text, dom.value, dom.tag, dom.classes], dim=1,)
 
 
 def domain(target_domain=None):
@@ -175,11 +177,7 @@ class GNNBase(NNBase):
     """
 
     def __init__(
-        self,
-        input_dim,
-        dom_encoder,
-        recurrent=False,
-        text_embed_size=text_embed_size,
+        self, input_dim, dom_encoder, recurrent=False, text_embed_size=text_embed_size,
     ):
         action_one_hot_size = 4  # 5 to enable wait
         encoder_size = dom_encoder.out_channels
@@ -201,7 +199,7 @@ class GNNBase(NNBase):
             init_xn(nn.Linear(dom_ux_action_fn_size, dom_ux_action_fn_size), "linear"),
             nn.Softmax(dim=1),
         )
-        transitivity_size = 4
+        transitivity_size = 12
         self.leaf_prop = DirectionalPropagation(
             encoder_size, transitivity_size, mask_dim=1, K=5
         )
@@ -315,13 +313,7 @@ class GNNBase(NNBase):
     @domain("dom")
     def x(self, dom, encoded_x):
         return torch.cat(
-            [
-                encoded_x,
-                dom.radio_value,
-                dom.focused,
-                dom.tampered,
-            ],
-            dim=1,
+            [encoded_x, dom.radio_value, dom.focused, dom.tampered,], dim=1,
         )
 
     @domain("dom")
@@ -472,7 +464,9 @@ class GNNBase(NNBase):
         )
         obj_int = global_max_pool(obj_att_input, dom_field.dom_index)
         return (
-            ux_action_consensus.max(dim=1, keepdim=True).values * disabed_mask * obj_int
+            ux_action_consensus.max(dim=1, keepdim=True).values
+            * disabled_mask
+            * obj_int
         )
 
     @domain("action")
@@ -833,10 +827,7 @@ class DualGAE(nn.Module):
 
     def encode(self, x, edge_index_1, edge_index_2):
         return torch.cat(
-            [
-                self.ae_1.encode(x, edge_index_1),
-                self.ae_2.encode(x, edge_index_2),
-            ],
+            [self.ae_1.encode(x, edge_index_1), self.ae_2.encode(x, edge_index_2),],
             dim=1,
         )
 
@@ -851,7 +842,7 @@ class DualGAE(nn.Module):
         return self.ae_1.recon_loss(z, edge_index_1) + self.ae_2.recon_loss(
             z, edge_index_2
         )
-    
+
     def forward(self, z, edge_index_1, edge_index_2):
         return self.encode(z, edge_index_1, edge_index_2)
 

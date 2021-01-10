@@ -45,7 +45,7 @@ class ModelBasedLeafFilter:
 
 
 def autoencoder_score_norm():
-    return NormalizeScore(shift_mean=True, scale_by=0.5, clamp_by=(0, 0.5), alpha=0.5)
+    return NormalizeScore(shift_mean=True, scale_by=0.2, clamp_by=(0, 0.2), alpha=0.5)
 
 
 def rdn_scorer(device, text_embed_size, autoencoder_size, encoder_size):
@@ -54,8 +54,8 @@ def rdn_scorer(device, text_embed_size, autoencoder_size, encoder_size):
             autoencoder_size,
             encoder_size,
             shift_mean=True,
-            scale_by=0.5,
-            clamp_by=(0, 0.5),
+            scale_by=0.8,
+            clamp_by=(0, 0.8),
             alpha=0.5,
         )
         .to(device)
@@ -125,7 +125,8 @@ def rdn_storage(device, rdn_scorer):
     ) + hash(rdn_scorer.actual_logs(logs))
     return RandomizedReplayStorage(
         lambda state: identifier(state[0].to(device), state[1].to(device)),
-        # device=device,
+        alpha=0.8,
+        device=device,
     )
 
 
@@ -206,7 +207,7 @@ def optimize(
         x = autoencoder_x(data)
         z = autoencoder.encode(x, data.dom_edge_index, data.spatial_edge_index)
         autoencoder_loss = autoencoder.recon_loss(
-            z, data.dom_edge_index, data.pos_edge_index
+            z, data.dom_edge_index, data.spatial_edge_index
         )
         autoencoder_loss.backward()
         ae_values.append(autoencoder_loss.clone().detach().view(1))

@@ -13,20 +13,53 @@ class EdgeAttrs(nn.Module):
     Generate edge attributes from node pairs
     """
 
-    def __init__(self, input_dim, out_dim):
+    def __init__(self, input_dim, out_dim, prior_edge_size):
         super(EdgeAttrs, self).__init__()
-        self.edge_fn = nn.Sequential(
-            init_ot(nn.Linear(input_dim * 3, input_dim), "relu"),
+        self.edge_attr_fn1 = nn.Sequential(
+            init_xn(nn.Linear(input_dim, input_dim), "relu"),
             nn.ReLU(),
-            init_xn(nn.Linear(input_dim, out_dim), "sigmoid"),
-            nn.Sigmoid(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"),
+            nn.ReLU(),
+        )
+        self.edge_attr_fn2 = nn.Sequential(
+            init_xn(nn.Linear(input_dim, input_dim), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"),
+            nn.ReLU(),
+        )
+        self.edge_attr_fn3 = nn.Sequential(
+            init_xn(nn.Linear(input_dim, input_dim), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"),
+            nn.ReLU(),
+        )
+        self.edge_attr_fn4 = nn.Sequential(
+            init_xn(nn.Linear(input_dim, input_dim), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"),
+            nn.ReLU(),
+        )
+        self.edge_sim = nn.CosineSimilarity()
+        self.edge_fn = nn.Sequential(
+            init_xn(nn.Linear(1 + 4 * out_dim + prior_edge_size, out_dim), "tanh"),
+            nn.Tanh(),
         )
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, edge_attr):
         x_src = x[edge_index[0]]
         x_dst = x[edge_index[1]]
-        _x = torch.cat([x_src, x_dst, x_src - x_dst], dim=1)
-        return self.edge_fn(_x)
+        y = torch.cat(
+            [
+                self.edge_attr_fn1(x_src),
+                self.edge_attr_fn2(x_dst),
+                self.edge_attr_fn3(x_src - x_dst),
+                self.edge_attr_fn4(x_src * x_dst),
+            ],
+            dim=1,
+        )
+        s = self.edge_sim(x_src.unsqueeze(2), x_dst.unsqueeze(2))
+        z = torch.cat([y, s, edge_attr], dim=1)
+        return self.edge_fn(z)
 
 
 class EdgeMask(nn.Module):

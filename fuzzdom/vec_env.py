@@ -60,7 +60,7 @@ class Delaunay:
         pos = data.pos.cpu().numpy()
         assert len(pos.shape) == 2 and pos.shape[1] == 3, str(pos.shape)
         if pos.shape[0] > 4:
-            tri = scipy.spatial.Delaunay(pos, qhull_options="QJ")
+            tri = scipy.spatial.Delaunay(pos, qhull_options="Qt Qbb Qc Qz Qx Q12")
             face = torch.from_numpy(tri.simplices)
             assert len(face.shape) == 2
             assert face.shape[1] == 4
