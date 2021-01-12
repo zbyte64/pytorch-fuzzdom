@@ -16,46 +16,34 @@ class EdgeAttrs(nn.Module):
     def __init__(self, input_dim, out_dim, prior_edge_size):
         super(EdgeAttrs, self).__init__()
         self.edge_attr_fn1 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, input_dim), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(input_dim, out_dim), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
         )
         self.edge_attr_fn2 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, input_dim), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(input_dim, out_dim), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
         )
         self.edge_attr_fn3 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, input_dim), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(input_dim, out_dim), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
         )
         self.edge_attr_fn4 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, input_dim), "relu"),
-            nn.ReLU(),
-            init_xn(nn.Linear(input_dim, out_dim), "relu"),
-            nn.ReLU(),
+            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
         )
         self.edge_sim = nn.CosineSimilarity()
+        hidden_size = 1 + 4 * out_dim + prior_edge_size
         self.edge_fn = nn.Sequential(
-            init_xn(nn.Linear(1 + 4 * out_dim + prior_edge_size, out_dim), "tanh"),
+            init_xn(nn.Linear(hidden_size, hidden_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(hidden_size, out_dim), "tanh"),
             nn.Tanh(),
         )
 
     def forward(self, x, edge_index, edge_attr):
-        x_src = x[edge_index[0]]
-        x_dst = x[edge_index[1]]
+        z1 = self.edge_attr_fn1(x)
+        z2 = self.edge_attr_fn2(x)
+        z3 = self.edge_attr_fn3(x)
+        z4 = self.edge_attr_fn4(x)
+        row, col = edge_index
         y = torch.cat(
-            [
-                self.edge_attr_fn1(x_src),
-                self.edge_attr_fn2(x_dst),
-                self.edge_attr_fn3(x_src - x_dst),
-                self.edge_attr_fn4(x_src * x_dst),
-            ],
-            dim=1,
+            [z1[row], z2[col], z3[row] - z3[col], (z4[row] * z4[col]) ** 0.5,], dim=1
         )
         s = self.edge_sim(x_src.unsqueeze(2), x_dst.unsqueeze(2))
         z = torch.cat([y, s, edge_attr], dim=1)
@@ -67,13 +55,13 @@ class EdgeMask(nn.Module):
     Propagate a mask [0,1] along edges with attributes
     """
 
-    def __init__(self, edge_dim, mask_dim=1, K=5, bias=True):
+    def __init__(self, edge_dim, mask_dim=1, K=5, bias=True, add_self_loops=False):
         super(EdgeMask, self).__init__()
         self.alpha = nn.Parameter(torch.tensor(1e-3))
         self.edge_fn = nn.Sequential(
             init_xn(nn.Linear(edge_dim, 1), "sigmoid"), nn.Sigmoid()
         )
-        self.conv = APPNP(K=K, alpha=self.alpha)
+        self.conv = APPNP(K=K, alpha=self.alpha)  # , add_self_loops=add_self_loops)
         self.K = K
         if bias:
             self.bias = nn.Parameter(torch.ones(mask_dim) * -3)

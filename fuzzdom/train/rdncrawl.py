@@ -205,10 +205,8 @@ def optimize(
         # data = train_test_split_edges(data)
         data = data[0]
         x = autoencoder_x(data)
-        z = autoencoder.encode(x, data.dom_edge_index, data.spatial_edge_index)
-        autoencoder_loss = autoencoder.recon_loss(
-            z, data.dom_edge_index, data.spatial_edge_index
-        )
+        z = autoencoder.encode(x, data.edge_index)
+        autoencoder_loss = autoencoder.recon_loss(z, data.edge_index)
         autoencoder_loss.backward()
         ae_values.append(autoencoder_loss.clone().detach().view(1))
     autoencoder_optimizer.step()

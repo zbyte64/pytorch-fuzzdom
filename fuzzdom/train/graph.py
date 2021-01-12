@@ -17,7 +17,7 @@ from a2c_ppo_acktr.storage import RolloutStorage
 
 from fuzzdom.factory_resolver import FactoryResolver
 from fuzzdom.env import MiniWoBGraphEnvironment, ManagedWebInterface
-from fuzzdom.models import GNNBase, GraphPolicy, DualGAE
+from fuzzdom.models import GNNBase, GraphPolicy, GAE
 from fuzzdom.domx import text_embed_size
 from fuzzdom.storage import StorageReceipt
 from fuzzdom.vec_env import make_vec_envs
@@ -82,7 +82,7 @@ def device(args):
 def autoencoder(args, text_embed_size, encoder_size, autoencoder_size):
     if isinstance(args.load_autoencoder, str):
         return torch.load(args.load_autoencoder)
-    return DualGAE(autoencoder_size, encoder_size)
+    return GAE(autoencoder_size, encoder_size)
 
 
 def dom_encoder(autoencoder):
@@ -336,9 +336,7 @@ def log_stats(args, j, episode_rewards, start, value_loss, action_loss):
     else:
         print(
             "Updates {j}, value loss {value_loss}, action loss {action_loss}".format(
-                j=j,
-                value_loss=value_loss,
-                action_loss=action_loss,
+                j=j, value_loss=value_loss, action_loss=action_loss,
             )
         )
 
@@ -349,12 +347,7 @@ def log_stats(args, j, episode_rewards, start, value_loss, action_loss):
 
 
 def episode_tick(
-    args,
-    j,
-    num_updates,
-    receipts,
-    rollouts,
-    resolver,
+    args, j, num_updates, receipts, rollouts, resolver,
 ):
     # put last observation first and clear
     obs_shape = rollouts.obs.size()[2:]

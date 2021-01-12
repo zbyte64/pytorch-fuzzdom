@@ -168,10 +168,20 @@ class AsyncioVectorEnv(VectorEnv):
     def step_async(self, actions):
         self._original_actions = actions
 
-    def step_wait(self):
-        observations, infos = self.loop.run_until_complete(
-            self.async_step(self._original_actions)
-        )
+    def step_wait(self, timeout=30, retries=3):
+        for i in range(retries):
+            try:
+                observations, infos = self.loop.run_until_complete(
+                    asyncio.wait_for(
+                        self.async_step(self._original_actions), timeout=timeout
+                    )
+                )
+            except asyncio.TimeoutError as error:
+                if i == retries - 1:
+                    raise
+                print((i, error))
+            else:
+                break
         try:
             concatenate(observations, self.observations, self.single_observation_space)
         except ValueError:

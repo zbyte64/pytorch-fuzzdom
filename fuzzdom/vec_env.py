@@ -5,14 +5,13 @@ from torch_geometric.transforms import (
     Distance,
     Spherical,
     KNNGraph,
-    AddSelfLoops,
 )
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils import to_undirected, add_self_loops, contains_self_loops
 import gym
 import numpy as np
 import networkx as nx
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 import asyncio
 import scipy.spatial
 import random
@@ -83,23 +82,109 @@ class Delaunay:
 
 
 class ToUndirected:
+    # no coalesce / row sorting
     def __call__(self, data):
-        data.edge_index = to_undirected(data.edge_index, num_nodes=data.num_nodes)
+        row, col = data.edge_index
+        row, col = torch.cat([row, col], dim=0), torch.cat([col, row], dim=0)
+        data.edge_index = torch.stack([row, col], dim=0)
+        # data.edge_index = to_undirected(data.edge_index, num_nodes=data.num_nodes)
+        return data
+
+
+class AddSelfLoops:
+    # no coalesce / row sorting
+    def __call__(self, data):
+        data.edge_index, _ = add_self_loops(data.edge_index, num_nodes=data.num_nodes)
         return data
 
 
 class DomDirection:
     def __call__(self, data):
-        direction = data.depth[data.edge_index[0]] > data.depth[data.edge_index[1]]
-        data.edge_attr = direction.type(torch.float32).view(-1, 1)
+        num_dom_edges = data.dom_edge_index.shape[1]
+        edge_count = data.edge_index.shape[1]
+        # in_direction = data.depth[data.edge_index[0]] < data.depth[data.edge_index[1]]
+        # out_direction = data.depth[data.edge_index[0]] > data.depth[data.edge_index[1]]
+        is_self_loop = (data.edge_index[0] == data.edge_index[1]).type(torch.float32)
+        _one_block = torch.ones(num_dom_edges)
+        is_parent = torch.cat(
+            [_one_block, torch.zeros(edge_count - num_dom_edges),], dim=0,
+        )
+        is_child = torch.cat(
+            [
+                torch.zeros(num_dom_edges),
+                _one_block,
+                torch.zeros(edge_count - 2 * num_dom_edges),
+            ],
+            dim=0,
+        )
+        is_other = (
+            torch.cat(
+                [
+                    torch.zeros(2 * num_dom_edges),
+                    torch.ones(edge_count - 2 * num_dom_edges),
+                ],
+                dim=0,
+            )
+            - is_self_loop
+        ).clamp(0, 1)
+        data.edge_attr = torch.cat(
+            [
+                # in_direction.type(torch.float32).view(-1, 1),
+                # out_direction.type(torch.float32).view(-1, 1),
+                is_parent.view(-1, 1),
+                is_child.view(-1, 1),
+                is_other.view(-1, 1),
+                is_self_loop.view(-1, 1),
+            ],
+            dim=1,
+        )
         return data
 
 
-SPATIAL_TRANSFORMER = Compose(
-    [Delaunay(), ToUndirected(), AddSelfLoops(), Distance(), Spherical(), FixEdgeAttr()]
-)
+class AddEdges:
+    def __init__(self, transformer):
+        self.transformer = transformer
 
-DOM_TRANSFORMER = Compose([ToUndirected(), DomDirection(), FixEdgeAttr()])
+    def __call__(self, data):
+        edge_index = data.edge_index
+        data = self.transformer(data)
+        data.edge_index = torch.cat([edge_index, data.edge_index], dim=1)
+        return data
+
+
+class MergeEdges:
+    def __init__(self, transformer):
+        self.transformer = transformer
+
+    def __call__(self, data):
+        edge_index = data.edge_index
+        ordered_index = OrderedDict(
+            (tuple(e), e)
+            for e in map(
+                lambda i: edge_index[:, i], (i for i in range(edge_index.shape[1]))
+            )
+        )
+        data = self.transformer(data)
+        for i in range(data.edge_index.shape[1]):
+            edge = data.edge_index[:, i]
+            ordered_index[tuple(edge)] = edge
+        data.edge_index = torch.stack(list(ordered_index.values())).t()
+        assert data.edge_index.shape[0] == 2, str(data.edge_index.shape)
+        return data
+
+
+TRANSFORMER = Compose(
+    [
+        ToUndirected(),
+        # AddEdges(Delaunay()),
+        MergeEdges(KNNGraph()),
+        AddSelfLoops(),
+        DomDirection(),
+        Distance(),
+        Spherical(),
+        FixEdgeAttr(),
+    ]
+)
 
 
 def chomp_leaves(leaves, k=20, **kwargs):
@@ -115,14 +200,8 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
     e_fields = encode_fields(graph_state.fields)
 
     fields_data = from_networkx(e_fields)
-    # prefix dom data edges and attributes with `dom` and `spatial`
-    dom_data = DOM_TRANSFORMER(dom_data)
     dom_data.dom_edge_index = dom_data.edge_index
-    dom_data.dom_edge_attr = dom_data.edge_attr
-    dom_data.edge_attr = None
-    dom_data = SPATIAL_TRANSFORMER(dom_data)
-    dom_data.spatial_edge_index = dom_data.edge_index
-    dom_data.spatial_edge_attr = dom_data.edge_attr
+    dom_data = TRANSFORMER(dom_data)
 
     fields_projection_data = vectorize_projections(
         {"field": list({"field_idx": i} for i in range(len(e_fields.nodes)))},
@@ -130,25 +209,11 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
         source_domain="dom",
         final_domain="dom_field",
     )
-    fields_projection_data.spatial_edge_attr = fields_projection_data.edge_attr
-    fields_projection_data.dom_edge_attr = dom_data.dom_edge_attr.repeat(
-        len(e_fields.nodes), 1
-    )
-    fields_projection_data.spatial_edge_index = fields_projection_data.edge_index
-    fields_projection_data.dom_edge_index = dom_data.dom_edge_index.repeat(
-        1, len(e_fields.nodes)
-    )
     broadcast_edges(
         fields_projection_data,
-        dom_data.spatial_edge_index,
+        dom_data.edge_index,
         len(e_fields.nodes),
-        "br_spatial_edge_index",
-    )
-    broadcast_edges(
-        fields_projection_data,
-        dom_data.dom_edge_index,
-        len(e_fields.nodes),
-        "br_dom_edge_index",
+        "br_edge_index",
     )
     leaves = filter_leaves(
         leaves, dom=dom_data, field=fields_data, dom_field=fields_projection_data
@@ -162,17 +227,7 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
     )
     # mask is leaf nodes
     leaves_data.mask = (leaves_data.dom_idx == leaves_data.dom_index).view(-1, 1)
-    # prefix leaves data edges and attributes with `dom` and `spatial`
-    leaves_data.spatial_edge_attr = leaves_data.edge_attr
-    leaves_data.dom_edge_attr = dom_data.dom_edge_attr.repeat(len(leaves), 1)
-    broadcast_edges(
-        leaves_data, dom_data.spatial_edge_index, len(leaves), "br_spatial_edge_index"
-    )
-    broadcast_edges(
-        leaves_data, dom_data.dom_edge_index, len(leaves), "br_dom_edge_index"
-    )
-    leaves_data.spatial_edge_index = leaves_data.edge_index
-    leaves_data.dom_edge_index = dom_data.dom_edge_index.repeat(1, len(leaves))
+    broadcast_edges(leaves_data, dom_data.edge_index, len(leaves), "br_edge_index")
     actions_data = vectorize_projections(
         {
             "ux_action": [
@@ -261,7 +316,9 @@ truthy_embed = lambda x: 1.0 if x else 0.0
 radio_embed = lambda x: RADIO_VALUES.get(x, 0.0)
 
 
-def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=text_embed_size):
+def encode_dom_info(
+    g: DomInfo, encode_with=None, text_embed_size=text_embed_size, add_self_loops=False
+):
     assert len(g.row)
     o = {}
     leaves = []
@@ -314,9 +371,10 @@ def encode_dom_info(g: DomInfo, encode_with=None, text_embed_size=text_embed_siz
             leaves.append(i)
 
     o["edge_index"] = torch.tensor([g.row, g.col], dtype=torch.long)
-    o["edge_index"] = torch.cat(
-        (o["edge_index"], torch.arange(0, num_nodes).repeat(2, 1)), dim=1
-    )
+    if add_self_loops:
+        o["edge_index"] = torch.cat(
+            (o["edge_index"], torch.arange(0, num_nodes).repeat(2, 1)), dim=1
+        )
     data = SubData(o, index=num_nodes)
     data.num_nodes = num_nodes
     return data, leaves, max_depth

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.utils import remove_self_loops
 
-from .models import Encoder, autoencoder_x, DualGAE
+from .models import Encoder, autoencoder_x, GAE
 from .vec_env import make_vec_envs
 from .functions import init_xu
 from .factory_resolver import FactoryResolver
@@ -68,8 +68,8 @@ class RDNScorer(torch.nn.Module):
         alpha=0.5,
     ):
         super().__init__()
-        self.dom_guesser = DualGAE(in_channels, out_channels)
-        self.dom_target = freeze_model(DualGAE(in_channels, out_channels))
+        self.dom_guesser = GAE(in_channels, out_channels)
+        self.dom_target = freeze_model(GAE(in_channels, out_channels))
         self.log_guesser = nn.Sequential(
             init_xu(nn.Linear(text_embed_size * 2, text_embed_size), "relu"),
             nn.ReLU(),
@@ -95,9 +95,7 @@ class RDNScorer(torch.nn.Module):
             return r["raw_score"]
 
     def guess_dom(self, dom, x):
-        return global_max_pool(
-            self.dom_guesser(x, dom.dom_edge_index, dom.spatial_edge_index), dom.batch
-        )
+        return global_max_pool(self.dom_guesser(x, dom.edge_index), dom.batch)
 
     def actual_dom(self, dom, x):
         with torch.no_grad():
@@ -106,9 +104,7 @@ class RDNScorer(torch.nn.Module):
                 if "batch" in dom
                 else torch.zeros(x.shape[0], dtype=torch.long).to(x.device)
             )
-            return global_max_pool(
-                self.dom_target(x, dom.dom_edge_index, dom.spatial_edge_index), batch
-            )
+            return global_max_pool(self.dom_target(x, dom.edge_index), batch)
 
     def guess_logs(self, logs):
         return global_max_pool(self.log_guesser(logs.x), logs.batch)
@@ -179,10 +175,8 @@ class AEScorerGymWrapper(gym.Wrapper):
             if check.shape[1] < 5:
                 return 0
             x = autoencoder_x(dom)
-            z = self.autoencoder.encode(x, dom.dom_edge_index, dom.spatial_edge_index)
-            score = self.autoencoder.recon_loss(
-                z, dom.dom_edge_index, dom.spatial_edge_index
-            )
+            z = self.autoencoder.encode(x, dom.edge_index)
+            score = self.autoencoder.recon_loss(z, dom.edge_index)
             score = self.score_normalizer.scale(score)
             score = score.item()
             print("AE SCORE", score)

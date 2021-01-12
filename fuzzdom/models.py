@@ -12,7 +12,7 @@ from torch_geometric.nn import (
     BatchNorm,
     GraphSizeNorm,
     InstanceNorm,
-    GAE,
+    GAE as BaseGAE,
 )
 import torch.nn.functional as F
 from torch_geometric.utils import add_self_loops
@@ -55,52 +55,26 @@ class GraphPolicy(Policy):
 class DirectionalPropagation(nn.Module):
     def __init__(self, hidden_size, transitivity_size, mask_dim, K):
         super().__init__()
-        self.dom_transitivity_fn = EdgeAttrs(
-            input_dim=hidden_size, out_dim=transitivity_size, prior_edge_size=1
+        self.transitivity_fn = EdgeAttrs(
+            input_dim=hidden_size, out_dim=transitivity_size, prior_edge_size=8
         )
-        self.spatial_transitivity_fn = EdgeAttrs(
-            input_dim=hidden_size, out_dim=transitivity_size, prior_edge_size=4
-        )
-        self.dom_edge_mask = EdgeMask(transitivity_size, mask_dim, K)
-        self.pos_edge_mask = EdgeMask(transitivity_size, mask_dim, K)
+        self.edge_mask = EdgeMask(transitivity_size, mask_dim, K)
 
-    def spatial_mask(self, x, dom, projection, mask, resolver):
-        spatial_edge_trans = self.spatial_transitivity_fn(
-            x, dom.spatial_edge_index, dom.spatial_edge_attr
-        )
+    def mask(self, x, dom, projection, mask, resolver):
+        dom_edge_trans = self.transitivity_fn(x, dom.edge_index, dom.dom_edge_attr)
         if projection is not dom:
-            _spatial_edge_trans = safe_bc_edges(
-                spatial_edge_trans, projection.br_spatial_edge_index
-            )
-        else:
-            _spatial_edge_trans = spatial_edge_trans
-        pos_mask, pos_mask_ew = self.pos_edge_mask(
-            _spatial_edge_trans, mask, projection.spatial_edge_index,
-        )
-        resolver["spatial_edge_weights"] = pos_mask_ew
-        return pos_mask
-
-    def dom_mask(self, x, dom, projection, mask, resolver):
-        dom_edge_trans = self.dom_transitivity_fn(
-            x, dom.dom_edge_index, dom.dom_edge_attr
-        )
-        if projection is not dom:
-            _dom_edge_trans = safe_bc_edges(
-                dom_edge_trans, projection.br_dom_edge_index
-            )
+            _dom_edge_trans = safe_bc_edges(dom_edge_trans, projection.br_edge_index)
         else:
             _dom_edge_trans = dom_edge_trans
-        dom_mask, dom_mask_ew = self.dom_edge_mask(
-            _dom_edge_trans, mask, projection.dom_edge_index,
+        dom_mask, dom_mask_ew = self.edge_mask(
+            _dom_edge_trans, mask, projection.edge_index,
         )
-        resolver["dom_edge_weights"] = dom_mask_ew
+        resolver["edge_weights"] = dom_mask_ew
         return dom_mask
 
     def forward(self, x, dom, projection, mask):
         with FactoryResolver(self, x=x, dom=dom, mask=mask, projection=projection) as r:
-            pos_mask = r["spatial_mask"]
-            dom_mask = r["dom_mask"]
-        return torch.max(mask, torch.max(pos_mask, dom_mask))
+            return torch.max(mask, r["mask"])
 
 
 class SoftActionDecoder(nn.Module):
@@ -319,11 +293,7 @@ class GNNBase(NNBase):
     @domain("dom")
     def encoded_x(self, dom):
         with torch.no_grad():
-            return torch.tanh(
-                self.dom_encoder(
-                    autoencoder_x(dom), dom.dom_edge_index, dom.spatial_edge_index
-                )
-            )
+            return torch.tanh(self.dom_encoder(autoencoder_x(dom), dom.edge_index))
 
     @domain("dom_leaf")
     def leaves_att(self, dom, dom_leaf, encoded_x):
@@ -606,7 +576,7 @@ class GNNBase(NNBase):
                 dim=1,
             )
             goal_dom_encoded = self.goal_dom_encoder(
-                goal_dom_input, dom_field.dom_edge_index
+                goal_dom_input, dom_field.edge_index
             )
             goal_dom_flat = global_max_pool(goal_dom_encoded, dom_field.batch)
             curr_state, rnn_hxs = self._forward_gru(goal_dom_flat, rnn_hxs, masks)
@@ -815,6 +785,27 @@ class Instructor(GNNBase):
             )
 
 
+class GAE(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.edge_encoder = Encoder(in_channels, out_channels)
+        self.ae = BaseGAE(self.edge_encoder)
+
+    def encode(self, x, edge_index):
+        return self.ae.encode(x, edge_index)
+
+    def decode(self, z, edge_index):
+        return self.ae_decode(z, edge_index)
+
+    def recon_loss(self, z, edge_index):
+        return self.ae.recon_loss(z, edge_index)
+
+    def forward(self, z, edge_index):
+        return self.encode(z, edge_index)
+
+
 class DualGAE(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -848,12 +839,16 @@ class DualGAE(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, add_self_loops=False):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.conv1 = GCNConv(in_channels, 2 * out_channels)
-        self.conv2 = GCNConv(2 * out_channels, out_channels)
+        self.conv1 = GCNConv(
+            in_channels, 2 * out_channels,  # add_self_loops=add_self_loops
+        )
+        self.conv2 = GCNConv(
+            2 * out_channels, out_channels,  # add_self_loops=add_self_loops
+        )
 
     def forward(self, x, edge_index):
         x = torch.relu(self.conv1(x, edge_index))
