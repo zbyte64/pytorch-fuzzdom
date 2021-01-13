@@ -1,6 +1,8 @@
 import torch
 import numpy as np
+from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from torch_geometric.data import Data
+from collections import defaultdict, deque
 import random
 
 from .data import TupleBatch
@@ -76,3 +78,34 @@ class RandomizedReplayStorage:
         ids = random.sample(list(self._data.keys()), sample_size)
         for id in ids:
             yield tuple(map(lambda x: x.to(self.device), self._data.pop(id)))
+
+
+class TaskQueueReplayStorage:
+    def __init__(self, batch_size, maxlen, device):
+        self.batch_size = batch_size
+        self.maxlen = maxlen
+        self.device = device
+        self.states = defaultdict(lambda: deque(maxlen=maxlen))
+        self.actions = defaultdict(lambda: deque(maxlen=maxlen))
+
+    def store_episode(self, task, states, actions):
+        assert len(states) == len(actions), str((states, actions))
+        self.states[task].extend(states)
+        self.actions[task].extend(actions)
+
+    def __len__(self):
+        return sum((len(v) for v in self.states.values()))
+
+    def __iter__(self):
+        all_states = [frame for v in self.states.values() for frame in v]
+        all_actions = [frame for v in self.actions.values() for frame in v]
+        sampler = BatchSampler(
+            SubsetRandomSampler(range(len(all_states))), self.batch_size, drop_last=True
+        )
+        for indices in sampler:
+            yield tuple(
+                map(
+                    lambda d: d.to(self.device),
+                    TupleBatch.from_data_list([all_states[i] for i in indices]),
+                )
+            ), torch.tensor([all_actions[i] for i in indices]).to(self.device)

@@ -19,7 +19,7 @@ from fuzzdom.factory_resolver import FactoryResolver
 from fuzzdom.env import MiniWoBGraphEnvironment, ManagedWebInterface
 from fuzzdom.models import GNNBase, GraphPolicy, GAE
 from fuzzdom.domx import text_embed_size
-from fuzzdom.storage import StorageReceipt
+from fuzzdom.storage import StorageReceipt, TaskQueueReplayStorage
 from fuzzdom.vec_env import make_vec_envs
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
 from fuzzdom.dir_paths import MINIWOB_HTML
@@ -204,6 +204,8 @@ def run_episode(
     num_updates,
     last_action_time,
     obs,
+    gail_train_loader,
+    receipts,
     resolver,
 ):
     episode_rewards = deque(maxlen=args.num_steps * args.num_processes)
@@ -226,6 +228,7 @@ def run_episode(
             num_updates,
             agent.optimizer.lr if args.algo == "acktr" else args.lr,
         )
+    start_episode_step = [0 for i in range(args.num_processes)]
 
     for step in range(args.num_steps):
         # Sample actions
@@ -246,12 +249,10 @@ def run_episode(
 
         rewards.append(reward)
 
-        for e, i in enumerate(infos):
-            if i.get("bad_transition"):
+        for e, info in enumerate(infos):
+            if info.get("bad_transition"):
                 action[e] = torch.zeros_like(action[e])
-
-        for info in infos:
-            if "episode" in info.keys():
+            elif "episode" in info.keys():
                 episode_rewards.append(info["episode"]["r"])
 
         # If done then clean the history of observations.
@@ -270,6 +271,19 @@ def run_episode(
             bad_masks,
         )
 
+        if args.gail:
+            for e, info in enumerate(infos):
+                if "episode" in info.keys() and info["episode"]["r"] > 0:
+                    series = [
+                        receipts._data[rollouts.obs[i, e].item()]
+                        for i in range(start_episode_step[e], step + 1)
+                    ]
+                    actions = rollouts.actions[
+                        start_episode_step[e] : step + 1, e, 0
+                    ].tolist()
+                    gail_train_loader.store_episode(info["task"], series, actions)
+                    start_episode_step[e] = step
+
     resolver.update(
         {
             "obs": obs,
@@ -279,11 +293,49 @@ def run_episode(
     )
 
 
-def optimize(args, actor_critic, agent, rollouts, resolver):
+def gail_discr(args, envs, actor_critic_base, dom_encoder, device):
+    if args.gail:
+        return gail.Discriminator(
+            actor_critic_base(input_dim=None, dom_encoder=dom_encoder, recurrent=False),
+            device,
+        )
+
+
+def gail_train_loader(args, device):
+    if args.gail:
+        return TaskQueueReplayStorage(args.num_mini_batch, 10 * args.num_steps, device)
+
+
+def optimize(
+    args,
+    actor_critic,
+    agent,
+    rollouts,
+    j,
+    gail_train_loader,
+    gail_discr,
+    receipts,
+    resolver,
+):
     with torch.no_grad():
         next_value = actor_critic.get_value(
             rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1]
         ).detach()
+
+    if args.gail and len(gail_train_loader) >= gail_train_loader.batch_size:
+        gail_epoch = args.gail_epoch
+        if j < 10:
+            gail_epoch = 100  # Warm up
+        for _ in range(gail_epoch):
+            gail_discr.update(gail_train_loader, rollouts, receipts)
+
+        for step in range(args.num_steps):
+            rollouts.rewards[step] = gail_discr.predict_reward(
+                receipts.redeem(rollouts.obs[step]),
+                rollouts.actions[step],
+                args.gamma,
+                rollouts.masks[step],
+            )
 
     rollouts.compute_returns(
         next_value,
@@ -372,7 +424,8 @@ def episode_tick(
 
     # attempt to fix segfault
     # https://github.com/pytorch/pytorch/issues/19969
-    torch.cuda.synchronize()
+    if args.cuda:
+        torch.cuda.synchronize()
 
 
 def train(modules=locals()):

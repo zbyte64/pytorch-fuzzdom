@@ -396,6 +396,17 @@ class ReceiptsGymWrapper(gym.ObservationWrapper):
         return idx
 
 
+def selected_target_from_action(obs, action):
+    (dom, objectives, obj_projection, leaves, actions, *_) = obs
+    combination_idx = action[0]
+    # ux_action, field, leaf
+    selected_combo = actions.combinations[combination_idx]
+    # print("Selected combo:", selected_combo)
+    selected_targets = {k: v for i, c in selected_combo for k, v in c.items()}
+    # print("Selected:", selected_targets)
+    return selected_targets
+
+
 class GraphGymWrapper(gym.Wrapper):
     """
     Convert graph state to tensor/Data
@@ -410,13 +421,7 @@ class GraphGymWrapper(gym.Wrapper):
 
     def action(self, action):
         assert len(action) == 1, str(action)
-        (dom, objectives, obj_projection, leaves, actions, *_) = self.last_observation
-        combination_idx = action[0]
-        # ux_action, field, leaf
-        selected_combo = actions.combinations[combination_idx]
-        # print("Selected combo:", selected_combo)
-        selected_targets = {k: v for i, c in selected_combo for k, v in c.items()}
-        # print("Selected:", selected_targets)
+        selected_targets = selected_target_from_action(self.last_observation, action)
         action_id = selected_targets["action_idx"]
         field_idx = selected_targets["field_idx"]
         dom_idx = selected_targets["dom_idx"]

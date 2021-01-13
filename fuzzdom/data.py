@@ -205,7 +205,7 @@ class TupleBatch:
             packed_sample = []
             ret.append(packed_sample)
             for source in samples:
-                assert isinstance(source, Data)
+                assert isinstance(source, Data), str(source)
                 packed_sample.append(source)
         return tuple(map(IndexedBatch.from_data_list, zip(*ret)))
 
