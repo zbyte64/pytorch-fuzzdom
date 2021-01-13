@@ -11,6 +11,8 @@ services:
     links:
       - selenium
       - squidproxy
+    ports:
+      - 5000:5000
     volumes:
       - ./fuzzdom:/code/fuzzdom
       - ./tmp:/tmp
@@ -19,6 +21,7 @@ services:
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models
       - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob
+    command: python -m fuzzdom.runtimes.serve
   selenium:
     image: selenium/standalone-chrome
     volumes:

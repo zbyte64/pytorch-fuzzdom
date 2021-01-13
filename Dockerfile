@@ -32,3 +32,5 @@ RUN python setup.py install
 
 
 COPY ./fuzzdom /code/fuzzdom
+
+EXPOSE 5000
