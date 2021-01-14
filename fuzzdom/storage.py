@@ -8,6 +8,19 @@ import random
 from .data import TupleBatch
 
 
+def send_data_to(data: Data, device: str):
+    for key in data.keys:
+        v = data[key]
+        if hasattr(v, "detach"):
+            v = v.detach()
+        if hasattr(v, "to"):
+            v = v.to(device)
+        else:
+            continue
+        data[key] = v
+    return data
+
+
 class StorageReceipt:
     """
     Convert graphs into integers for easier integration
@@ -19,25 +32,27 @@ class StorageReceipt:
         self.device = device
         self.storage_device = storage_device
 
-    def __call__(self, state):
+    def __call__(self, state: tuple):
         return self.issue_receipt(state)
 
-    def __contains__(self, key):
+    def __contains__(self, key: int):
         return key in self._data
 
-    def __getitem__(self, receipt):
+    def __getitem__(self, receipt: int):
         results = [self._data[receipt]]
         return self._wrap_results(results)
 
     def __reduce__(self):
         return (StorageReceipt, tuple())
 
-    def issue_receipt(self, state):
+    def issue_receipt(self, state: tuple):
         # always have actions
         assert len(state[2])
         receipt = self._counter
         self._counter += 1
-        self._data[receipt] = tuple(map(lambda x: x.to(self.storage_device), state))
+        self._data[receipt] = tuple(
+            (send_data_to(x, self.storage_device) for x in state)
+        )
         return torch.tensor([receipt])
 
     def redeem(self, receipts):
@@ -48,7 +63,7 @@ class StorageReceipt:
 
     def _wrap_results(self, results):
         return tuple(
-            map(lambda x: x.to(self.device), TupleBatch.from_data_list(results))
+            (send_data_to(c, self.device) for c in TupleBatch.from_data_list(results))
         )
 
     def prune(self, active_receipts):
@@ -69,7 +84,9 @@ class RandomizedReplayStorage:
 
     def insert(self, states):
         for id, state in zip(map(self.identifier, states), states):
-            self._data[id] = tuple(map(lambda x: x.to(self.storage_device), state))
+            self._data[id] = tuple(
+                (send_data_to(x, self.storage_device) for x in state)
+            )
 
     def next(self):
         sample_size = int(len(self._data) * self.alpha)
@@ -77,7 +94,7 @@ class RandomizedReplayStorage:
             return
         ids = random.sample(list(self._data.keys()), sample_size)
         for id in ids:
-            yield tuple(map(lambda x: x.to(self.device), self._data.pop(id)))
+            yield tuple((send_data_to(x, self.device) for x in self._data.pop(id)))
 
 
 class TaskQueueReplayStorage:
@@ -104,8 +121,8 @@ class TaskQueueReplayStorage:
         )
         for indices in sampler:
             yield tuple(
-                map(
-                    lambda d: d.to(self.device),
-                    TupleBatch.from_data_list([all_states[i] for i in indices]),
+                (
+                    send_data_to(c, self.device)
+                    for c in TupleBatch.from_data_list([all_states[i] for i in indices])
                 )
             ), torch.tensor([all_actions[i] for i in indices]).to(self.device)

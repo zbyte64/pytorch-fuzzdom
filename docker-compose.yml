@@ -25,9 +25,19 @@ services:
   selenium:
     image: selenium/standalone-chrome
     volumes:
-      - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob:ro
-      - ./fuzzdom:/code/fuzzom
-      - /dev/shm:/dev/shm
+      - type: volume
+        source: miniwob-volume
+        target: /opt/conda/lib/python3.7/site-packages/miniwob
+        read_only: true
+        volume:
+          nocopy: true
+      - type: bind
+        source: ./fuzzdom
+        target: /code/fuzzom
+        read_only: true
+      - type: bind
+        source: /dev/shm
+        target: /dev/shm
     ports:
       - 4444:4444
     links:

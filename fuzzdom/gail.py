@@ -20,6 +20,7 @@ from torch_geometric.data import Data, Batch
 from baselines.common.running_mean_std import RunningMeanStd
 
 from .factory_resolver import FactoryResolver
+from fuzzdom.vec_env import replace_nan
 
 
 class Discriminator(nn.Module):
@@ -67,7 +68,7 @@ class Discriminator(nn.Module):
             actions.batch.view(-1, 1), actions.action_index
         ).view(-1)
         batch_size = actions.batch.max().item() + 1
-        votes = torch.zeros(action_batch_idx.shape[0], 1)
+        votes = torch.zeros(action_batch_idx.shape[0], 1, device=self.device)
         past = 0
         for b_idx in range(batch_size):
             _m = action_batch_idx == b_idx
@@ -149,7 +150,7 @@ class Discriminator(nn.Module):
             expert_state, expert_action = expert_batch
             # expert_state = obsfilt(expert_state.numpy(), update=False)
             # expert_state = torch.FloatTensor(expert_state).to(self.device)
-            expert_action = expert_action.to(self.device)
+            # expert_action = expert_action.to(self.device)
             expert_d = self.trunk(expert_state, expert_action)
 
             expert_loss = F.binary_cross_entropy_with_logits(
@@ -185,4 +186,4 @@ class Discriminator(nn.Module):
                 self.returns = self.returns * masks * gamma + reward
                 self.ret_rms.update(self.returns.cpu().numpy())
 
-            return reward / np.sqrt(self.ret_rms.var[0] + 1e-8)
+            return replace_nan(reward / np.sqrt(self.ret_rms.var[0] + 1e-8))

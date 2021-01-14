@@ -330,7 +330,7 @@ def optimize(
             gail_discr.update(gail_train_loader, rollouts, receipts)
 
         for step in range(args.num_steps):
-            rollouts.rewards[step] = gail_discr.predict_reward(
+            rollouts.rewards[step] += gail_discr.predict_reward(
                 receipts.redeem(rollouts.obs[step]),
                 rollouts.actions[step],
                 args.gamma,
