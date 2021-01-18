@@ -20,3 +20,4 @@ pytest-asyncio
 git+https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail.git@master#egg=pytorch-a2c-ppo-acktr-gail
 git+https://github.com/zbyte64/miniwob-plusplus.git@0018acc#egg=miniwob
 Flask
+flask-cors

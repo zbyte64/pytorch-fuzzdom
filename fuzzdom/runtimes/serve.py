@@ -1,4 +1,5 @@
 from flask import Flask, send_from_directory, request, jsonify
+from flask_cors import CORS
 
 from fuzzdom.state import MiniWoBGraphState, DomInfo, Fields
 from fuzzdom.vec_env import state_to_vector
@@ -7,6 +8,7 @@ from fuzzdom.train import rdncrawl
 from fuzzdom.factory_resolver import FactoryResolver
 
 app = Flask(__name__, static_url_path="")
+CORS(app)
 
 resolver = FactoryResolver(rdncrawl)
 
@@ -14,6 +16,11 @@ resolver = FactoryResolver(rdncrawl)
 @app.route("/init.js")
 def init_js():
     return send_from_directory("/code/fuzzdom/js", "init.js")
+
+
+@app.route("/heatmap.js")
+def init_js():
+    return send_from_directory("/code/fuzzdom/js", "heatmap.js")
 
 
 @app.route("/heatmap/<key>/<value>")
@@ -33,10 +40,14 @@ def heatmap(key, value):
     votes, action_batch_idx = action_votes
     (dom, objectives, obj_projection, leaves, actions, *_) = obs
     return jsonify(
-        {
-            obs.dom_info.ref[actions.combinations[combination_idx]["dom_idx"]]: v
+        [
+            (
+                obs.dom_info.ref[actions.combinations[combination_idx]["dom_idx"]],
+                actions.combinations[combination_idx]["action_idx"],
+                v,
+            )
             for combination_idx, v in zip(action_batch_idx, critic_value)
-        }
+        ]
     )
 
 
