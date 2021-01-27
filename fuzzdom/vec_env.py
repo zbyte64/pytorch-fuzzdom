@@ -194,7 +194,9 @@ def chomp_leaves(leaves, k=20, **kwargs):
     return leaves
 
 
-def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
+def state_to_vector(
+    graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves, num_of_actions=4
+):
     dom_data, leaves, max_depth = encode_dom_info(graph_state.dom_info)
     assert dom_data.num_nodes, str(graph_state.dom_info)
     e_fields = encode_fields(graph_state.fields)
@@ -231,7 +233,8 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
     actions_data = vectorize_projections(
         {
             "ux_action": [
-                {"action_idx": i, "action_one_hot": one_hot(i, 4)} for i in range(4)
+                {"action_idx": i, "action_one_hot": one_hot(i, num_of_actions)}
+                for i in range(num_of_actions)
             ],
             "field": [{"field_idx": i} for i in e_fields.nodes.keys()],
             "leaf": [{"dom_idx": torch.tensor(i, dtype=torch.int64)} for i in leaves],
@@ -245,6 +248,12 @@ def state_to_vector(graph_state: MiniWoBGraphState, filter_leaves=chomp_leaves):
             ("field", "dom"),
             ("leaf", "dom"),
         ],
+    )
+    broadcast_edges(
+        actions_data,
+        dom_data.edge_index,
+        len(actions_data.combinations),
+        "br_edge_index",
     )
 
     logs_data = vectorize_logs(graph_state.logs)
@@ -415,9 +424,10 @@ class GraphGymWrapper(gym.Wrapper):
     action_space = gym.spaces.Discrete(1)  # np.inf
     observation_space = gym.spaces.Discrete(np.inf)
 
-    def __init__(self, env, filter_leaves=chomp_leaves):
+    def __init__(self, env, filter_leaves=chomp_leaves, num_of_actions=4):
         super().__init__(env)
         self.filter_leaves = filter_leaves
+        self.num_of_actions = num_of_actions
 
     def action(self, action):
         assert len(action) == 1, str(action)
@@ -433,7 +443,7 @@ class GraphGymWrapper(gym.Wrapper):
     def observation(self, obs: MiniWoBGraphState):
         assert isinstance(obs, MiniWoBGraphState), str(type(obs))
         self.last_state = obs
-        obs = state_to_vector(obs, self.filter_leaves)
+        obs = state_to_vector(obs, self.filter_leaves, self.num_of_actions)
         self.last_observation = obs
         return obs
 
@@ -441,7 +451,7 @@ class GraphGymWrapper(gym.Wrapper):
         assert isinstance(obs, MiniWoBGraphState), str(type(obs))
         loop = asyncio.get_event_loop()
         v_obs = await loop.run_in_executor(
-            executor, state_to_vector, obs, self.filter_leaves
+            executor, state_to_vector, obs, self.filter_leaves, self.num_of_actions
         )
         self.last_observation = v_obs
         self.last_state = obs
@@ -460,12 +470,18 @@ class GraphGymWrapper(gym.Wrapper):
         return await self.exec_observation(obs, executor)
 
 
-def make_vec_envs(envs, receipts, inner=lambda x: x, filter_leaves=chomp_leaves):
+def make_vec_envs(
+    envs, receipts, inner=lambda x: x, filter_leaves=chomp_leaves, num_of_actions=4
+):
     from .asyncio_vector_env import AsyncioVectorEnv
 
     envs = [
         ReceiptsGymWrapper(
-            inner(GraphGymWrapper(env, filter_leaves=filter_leaves)),
+            inner(
+                GraphGymWrapper(
+                    env, filter_leaves=filter_leaves, num_of_actions=num_of_actions
+                )
+            ),
             receipt_factory=receipts,
         )
         for env in envs

@@ -365,6 +365,7 @@ class MiniWoBGraphEnvironment(gym.Env):
         await self.run_script("core.startEpisodeReal();")
         self.start_time = time.time()
         self.state = await self.get_wob_state()
+        # print((self.task, self.state.fields))
 
     async def get_wob_state(self) -> MiniWoBGraphState:
         # Get the utterance

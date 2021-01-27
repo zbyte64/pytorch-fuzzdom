@@ -44,6 +44,10 @@ class ModelBasedLeafFilter:
             return topk.indices.tolist()
 
 
+def dom_encoder(autoencoder):
+    return autoencoder
+
+
 def autoencoder_score_norm():
     return NormalizeScore(shift_mean=True, scale_by=0.2, clamp_by=(0, 0.2), alpha=0.5)
 

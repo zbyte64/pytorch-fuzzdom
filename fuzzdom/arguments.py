@@ -10,6 +10,21 @@ def get_args():
         "--algo", default="a2c", help="algorithm to use: a2c | ppo | acktr"
     )
     parser.add_argument(
+        "--model", default="restricted", help="model to use: restricted | sage | gcn"
+    )
+    parser.add_argument(
+        "--num-of-actions",
+        type=int,
+        default=2,
+        help="Number of actions to support: 1 click | 2 input | 4 copy & paste | 5 wait",
+    )
+    parser.add_argument(
+        "--rdn",
+        action="store_true",
+        default=False,
+        help="enable random distilled network scoring",
+    )
+    parser.add_argument(
         "--gail",
         action="store_true",
         default=False,

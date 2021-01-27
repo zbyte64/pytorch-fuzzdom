@@ -9,6 +9,7 @@ import gym
 import numpy as np
 import torch
 import torch_geometric
+from torch_geometric.data import Data, Batch
 
 from tensorboardX import SummaryWriter
 from a2c_ppo_acktr import algo, utils
@@ -17,10 +18,22 @@ from a2c_ppo_acktr.storage import RolloutStorage
 
 from fuzzdom.factory_resolver import FactoryResolver
 from fuzzdom.env import MiniWoBGraphEnvironment, ManagedWebInterface
-from fuzzdom.models import GNNBase, GraphPolicy, GAE
+from fuzzdom.models import (
+    GNNBase,
+    GraphPolicy,
+    GAE,
+    autoencoder_x,
+    GCNConvBase,
+    SAGEConvBase,
+)
 from fuzzdom.domx import text_embed_size
-from fuzzdom.storage import StorageReceipt, TaskQueueReplayStorage
+from fuzzdom.storage import (
+    StorageReceipt,
+    TaskQueueReplayStorage,
+    RandomizedReplayStorage,
+)
 from fuzzdom.vec_env import make_vec_envs
+from fuzzdom.rdn import RDNScorerGymWrapper, RDNScorer, freeze_model
 from fuzzdom.curriculum import LevelTracker, MINIWOB_CHALLENGES
 from fuzzdom.dir_paths import MINIWOB_HTML
 from fuzzdom import gail
@@ -39,7 +52,7 @@ def log_dir(args):
     return os.path.expanduser(args.log_dir)
 
 
-def envs(args, receipts, log_dir):
+def envs(args, receipts, log_dir, rdn_scorer):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
@@ -63,7 +76,10 @@ def envs(args, receipts, log_dir):
         tasks = [[task]]
     print("Selected tasks:", tasks)
     envs = make_vec_envs(
-        [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)], receipts
+        [make_env(tasks[i % len(tasks)]) for i in range(args.num_processes)],
+        receipts,
+        inner=lambda env: RDNScorerGymWrapper(env, rdn_scorer) if rdn_scorer else env,
+        num_of_actions=args.num_of_actions,
     )
     return envs
 
@@ -86,11 +102,45 @@ def autoencoder(args, text_embed_size, encoder_size, autoencoder_size):
 
 
 def dom_encoder(autoencoder):
-    return autoencoder
+    return freeze_model(autoencoder)
 
 
-def actor_critic_base():
-    return GNNBase
+def rdn_scorer(args, device, text_embed_size, autoencoder_size, encoder_size):
+    if not args.rdn:
+        return None
+    return (
+        RDNScorer(
+            autoencoder_size,
+            encoder_size,
+            shift_mean=True,
+            scale_by=0.02,
+            clamp_by=(0, 0.1),
+            alpha=0.5,
+        )
+        .to(device)
+        .eval()
+    )
+
+
+def rdn_optimizer(rdn_scorer, args):
+    if rdn_scorer:
+        return torch.optim.Adam(rdn_scorer.parameters(), lr=args.rdn_lr)
+
+
+def rdn_storage(device, rdn_scorer):
+    if not rdn_scorer:
+        return None
+    return RandomizedReplayStorage(id, alpha=0.5, device=device)
+
+
+def actor_critic_base(args):
+    if args.model == "sage":
+        return SAGEConvBase
+    if args.model == "gcn":
+        return GCNConvBase
+    if args.model == "restricted":
+        return GNNBase
+    raise RunTimeError("%s is not a valid model type" % args.model)
 
 
 def actor_critic(args, device, receipts, dom_encoder, actor_critic_base):
@@ -98,7 +148,11 @@ def actor_critic(args, device, receipts, dom_encoder, actor_critic_base):
         (args.num_processes,),
         gym.spaces.Discrete(1),  # envs.action_space,
         base=actor_critic_base,
-        base_kwargs={"dom_encoder": dom_encoder, "recurrent": args.recurrent_policy},
+        base_kwargs={
+            "dom_encoder": dom_encoder,
+            "recurrent": args.recurrent_policy,
+            "num_of_actions": args.num_of_actions,
+        },
         receipts=receipts,
     )
     if args.load_model:
@@ -273,7 +327,7 @@ def run_episode(
 
         if args.gail:
             for e, info in enumerate(infos):
-                if "episode" in info.keys() and info["episode"]["r"] > 0:
+                if "episode" in info.keys():
                     series = [
                         receipts._data[rollouts.obs[i, e].item()]
                         for i in range(start_episode_step[e], step + 1)
@@ -281,8 +335,15 @@ def run_episode(
                     actions = rollouts.actions[
                         start_episode_step[e] : step + 1, e, 0
                     ].tolist()
-                    gail_train_loader.store_episode(info["task"], series, actions)
                     start_episode_step[e] = step
+                    if info["episode"]["r"] > 0:
+                        gail_train_loader["pos"].store_episode(
+                            info["task"], series, actions
+                        )
+                    else:
+                        gail_train_loader["neg"].store_episode(
+                            info["task"], series, actions
+                        )
 
     resolver.update(
         {
@@ -296,14 +357,26 @@ def run_episode(
 def gail_discr(args, envs, actor_critic_base, dom_encoder, device):
     if args.gail:
         return gail.Discriminator(
-            actor_critic_base(input_dim=None, dom_encoder=dom_encoder, recurrent=False),
+            actor_critic_base(
+                input_dim=None,
+                dom_encoder=dom_encoder,
+                recurrent=False,
+                num_of_actions=args.num_of_actions,
+            ),
             device,
         )
 
 
 def gail_train_loader(args, device):
     if args.gail:
-        return TaskQueueReplayStorage(args.num_mini_batch, 10 * args.num_steps, device)
+        return {
+            "pos": TaskQueueReplayStorage(
+                args.num_mini_batch, 10 * args.num_steps, device
+            ),
+            "neg": TaskQueueReplayStorage(
+                args.num_mini_batch, 50 * args.num_steps, device
+            ),
+        }
 
 
 def optimize(
@@ -315,6 +388,10 @@ def optimize(
     gail_train_loader,
     gail_discr,
     receipts,
+    rdn_scorer,
+    rdn_storage,
+    rdn_optimizer,
+    device,
     resolver,
 ):
     with torch.no_grad():
@@ -322,20 +399,30 @@ def optimize(
             rollouts.obs[-1], rollouts.recurrent_hidden_states[-1], rollouts.masks[-1]
         ).detach()
 
-    if args.gail and len(gail_train_loader) >= gail_train_loader.batch_size:
+    if (
+        args.gail
+        and len(gail_train_loader["pos"]) >= gail_train_loader["pos"].batch_size
+        and len(gail_train_loader["neg"]) >= gail_train_loader["neg"].batch_size
+    ):
         gail_epoch = args.gail_epoch
         if j < 10:
             gail_epoch = 100  # Warm up
         for _ in range(gail_epoch):
-            gail_discr.update(gail_train_loader, rollouts, receipts)
+            gail_loss = gail_discr.update(
+                gail_train_loader["pos"], gail_train_loader["neg"], receipts
+            )
+        print("GAIL LOSS:", gail_loss)
 
+        # rollouts.rewards += gail_discr.predict_reward(
+        #    receipts.redeem(rollouts.obs), rollouts.actions, args.gamma, rollouts.masks,
+        # )
         for step in range(args.num_steps):
             rollouts.rewards[step] += gail_discr.predict_reward(
                 receipts.redeem(rollouts.obs[step]),
                 rollouts.actions[step],
                 args.gamma,
                 rollouts.masks[step],
-            )
+            ).clamp(-1, 1)
 
     rollouts.compute_returns(
         next_value,
@@ -345,6 +432,27 @@ def optimize(
         args.use_proper_time_limits,
     )
     value_loss, action_loss, dist_entropy = agent.update(rollouts)
+
+    if args.rdn:
+        rdn_values = list(
+            map(lambda state: (state[0], state[-1]), receipts._data.values()),
+        )
+        rdn_storage.insert(rdn_values)
+        del rdn_values
+
+        mini_batch_size = args.num_mini_batch
+        rdn_sample = list(rdn_storage.next())
+        rdn_dom = Batch.from_data_list([x[0] for x in rdn_sample]).to(device)
+        rdn_logs = Batch.from_data_list([x[1] for x in rdn_sample]).to(device)
+
+        rdn_scorer.train()
+        rdn_optimizer.zero_grad()
+        rdn_loss, rdn_scores = rdn_scorer.loss(rdn_dom, rdn_logs)
+        rdn_loss.backward()
+        rdn_optimizer.step()
+        rdn_scorer.eval()
+        rdn_scorer.score_normalizer.update(rdn_scores)
+
     resolver.update(
         {
             "value_loss": value_loss,
@@ -398,8 +506,14 @@ def log_stats(args, j, episode_rewards, start, value_loss, action_loss):
         pprint(LevelTracker.global_scoreboard)
 
 
+def mean_score(episode_rewards):
+    if len(episode_rewards):
+        return np.mean(episode_rewards)
+    return None
+
+
 def episode_tick(
-    args, j, num_updates, receipts, rollouts, resolver,
+    args, j, num_updates, receipts, rollouts, top_mean_score, mean_score, resolver,
 ):
     # put last observation first and clear
     obs_shape = rollouts.obs.size()[2:]
@@ -416,6 +530,7 @@ def episode_tick(
         args.save_interval
         and args.save_dir
         and (j % args.save_interval == 0 or j == num_updates - 1)
+        and (mean_score is None or mean_score > top_mean_score)
     ):
         resolver("save_models")
 
@@ -446,6 +561,7 @@ def train(modules=locals()):
         last_snapshot = tracemalloc.take_snapshot()
 
     tensorboard_writer = r["tensorboard_writer"]
+    r["top_mean_score"] = 0
 
     for j in range(num_updates):
         with r.chain(j=j, last_action_time=last_action_time) as s:
@@ -457,6 +573,8 @@ def train(modules=locals()):
             s.report_values()
             s.disable_reporting()
             s("episode_tick")
+            if s["mean_score"] is not None:
+                r["top_mean_score"] = max(s["mean_score"], r["top_mean_score"])
             r["obs"] = s["obs"]
         if args.profile_memory:
             curr_snapshot = tracemalloc.take_snapshot()

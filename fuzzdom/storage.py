@@ -88,10 +88,11 @@ class RandomizedReplayStorage:
                 (send_data_to(x, self.storage_device) for x in state)
             )
 
-    def next(self):
-        sample_size = int(len(self._data) * self.alpha)
-        if sample_size < 1:
-            return
+    def next(self, sample_size=None):
+        if sample_size is None:
+            sample_size = int(len(self._data) * self.alpha)
+            if sample_size < 1:
+                return
         ids = random.sample(list(self._data.keys()), sample_size)
         for id in ids:
             yield tuple((send_data_to(x, self.device) for x in self._data.pop(id)))

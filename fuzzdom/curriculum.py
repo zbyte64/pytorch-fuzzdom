@@ -57,7 +57,7 @@ MINIWOB_CHALLENGES = _miniwob_path(
     [
         ["click-button", "click-dialog-2", "click-link", "click-tab", "click-widget"],
         [
-            "choose-list-simple",
+            # "choose-list-simple",
             "choose-list",
             "click-option",
             "click-checkboxes",
@@ -66,7 +66,7 @@ MINIWOB_CHALLENGES = _miniwob_path(
         ["enter-text", "enter-text-dynamic"],  # "enter-password"],
         # "click-checkboxes-large"],
         # "navigate-tree"],
-        ["enter-password-2", "login-user", "login-user-popup"],  # ,
+        ["enter-password-2", "login-user", "login-user-popup"],  # ,,
         ["multi-layouts", "multi-orderings"],
         # ["social-media", "social-media-all", "social-media-some"],
         # ["click-tab-2", "click-tab-2-medium"],  # "click-tab-2-hard"],

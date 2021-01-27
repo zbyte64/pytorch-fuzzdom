@@ -46,6 +46,7 @@ class FactoryResolver:
         cls.writer = None
 
     def __enter__(self):
+        self._suffix = None
         if FactoryResolver._factory_stack:
             parent = FactoryResolver._factory_stack[-1]
             if parent._last_resolve:

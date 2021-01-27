@@ -21,6 +21,7 @@ from baselines.common.running_mean_std import RunningMeanStd
 
 from .factory_resolver import FactoryResolver
 from fuzzdom.vec_env import replace_nan
+from .functions import *
 
 
 class Discriminator(nn.Module):
@@ -34,7 +35,11 @@ class Discriminator(nn.Module):
         self.device = device
 
         self.base = base
-        self.trunk_fn = nn.Sequential(nn.Linear(4, 1))
+        self.trunk_fn = nn.Sequential(
+            init_xn(nn.Linear(base.critic_size, base.critic_size), "relu"),
+            nn.ReLU(),
+            init_xn(nn.Linear(base.critic_size, 1), "linear"),
+        )
 
         self.train()
         self.to(device)
@@ -58,8 +63,8 @@ class Discriminator(nn.Module):
             rnn_hxs=None,
             masks=None,
         ) as r:
-            trunk = r["action_trunk"]
-            x = self.trunk_fn(torch.cat([trunk, votes], dim=1))
+            trunk = r["critic_trunk"]
+            x = self.trunk_fn(trunk) * votes
             return global_max_pool(x, r["action_batch_idx"])
 
     def trunk(self, inputs, action):
@@ -129,21 +134,16 @@ class Discriminator(nn.Module):
         grad_pen = lambda_ * (grad.norm(2, dim=1) - 1).pow(2).mean()
         return grad_pen
 
-    def update(self, expert_loader, rollouts, receipts):
+    def update(self, expert_loader, negative_loader, receipts):
         self.train()
 
-        policy_data_generator = rollouts.feed_forward_generator(
-            None, mini_batch_size=expert_loader.batch_size
-        )
+        assert len(negative_loader) >= negative_loader.batch_size
         assert len(expert_loader) >= expert_loader.batch_size
 
         loss = 0
         n = 0
-        for expert_batch, policy_batch in zip(expert_loader, policy_data_generator):
-            policy_state, policy_action = (
-                receipts.redeem(policy_batch[0]),
-                policy_batch[2],
-            )
+        for expert_batch, policy_batch in zip(expert_loader, negative_loader):
+            policy_state, policy_action = policy_batch
             batch_size = policy_state[0].batch.max().item() + 1
             policy_d = self.trunk(policy_state, policy_action)
 
@@ -186,4 +186,6 @@ class Discriminator(nn.Module):
                 self.returns = self.returns * masks * gamma + reward
                 self.ret_rms.update(self.returns.cpu().numpy())
 
-            return replace_nan(reward / np.sqrt(self.ret_rms.var[0] + 1e-8))
+            ret = replace_nan(reward / np.sqrt(self.ret_rms.var[0] + 1e-8))
+            print("GAIL SCORES:", ret)
+            return ret

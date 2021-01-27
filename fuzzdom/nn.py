@@ -15,25 +15,26 @@ class EdgeAttrs(nn.Module):
 
     def __init__(self, input_dim, out_dim, prior_edge_size):
         super(EdgeAttrs, self).__init__()
+        feature_dim = prior_edge_size
         self.edge_attr_fn1 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(input_dim, feature_dim), "relu"), nn.ReLU(),
         )
         self.edge_attr_fn2 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(input_dim, feature_dim), "relu"), nn.ReLU(),
         )
         self.edge_attr_fn3 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(input_dim, feature_dim), "relu"), nn.ReLU(),
         )
         self.edge_attr_fn4 = nn.Sequential(
-            init_xn(nn.Linear(input_dim, out_dim), "relu"), nn.ReLU(),
+            init_xn(nn.Linear(input_dim, feature_dim), "relu"), nn.ReLU(),
         )
         self.edge_sim = nn.CosineSimilarity()
-        hidden_size = 1 + 4 * out_dim + prior_edge_size
+        hidden_size = 1 + 4 * feature_dim + prior_edge_size
         self.edge_fn = nn.Sequential(
-            init_xn(nn.Linear(hidden_size, hidden_size), "relu"),
+            init_xn(nn.Linear(hidden_size, out_dim), "relu"),
             nn.ReLU(),
-            init_xn(nn.Linear(hidden_size, out_dim), "tanh"),
-            nn.Tanh(),
+            # init_xn(nn.Linear(hidden_size, out_dim), "tanh"),
+            # nn.Tanh(),
         )
 
     def forward(self, x, edge_index, edge_attr):

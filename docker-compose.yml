@@ -20,24 +20,14 @@ services:
       - miniwob-volume:/root/.cache
       - ./datadir:/code/datadir
       - ./trained_models:/code/trained_models
-      - miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob
+      #- miniwob-volume:/opt/conda/lib/python3.7/site-packages/miniwob
+      - ./miniwob-plusplus/python/miniwob:/opt/conda/lib/python3.7/site-packages/miniwob
     command: python -m fuzzdom.runtimes.serve
   selenium:
     image: selenium/standalone-chrome
     volumes:
-      - type: volume
-        source: miniwob-volume
-        target: /opt/conda/lib/python3.7/site-packages/miniwob
-        read_only: true
-        volume:
-          nocopy: true
-      - type: bind
-        source: ./fuzzdom
-        target: /code/fuzzom
-        read_only: true
-      - type: bind
-        source: /dev/shm
-        target: /dev/shm
+      - ./miniwob-plusplus/python/miniwob/html:/opt/conda/lib/python3.7/site-packages/miniwob/html:ro
+      - /dev/shm:/dev/shm
     ports:
       - 4444:4444
     links:

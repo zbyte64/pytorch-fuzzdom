@@ -5,6 +5,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.utils import remove_self_loops
+from baselines.common.running_mean_std import RunningMeanStd
 
 from .models import Encoder, autoencoder_x, GAE
 from .vec_env import make_vec_envs
@@ -28,31 +29,16 @@ class NormalizeScore:
         self.scale_by = scale_by
         self.clamp_by = clamp_by
         self.shift_mean = shift_mean
-        self.std_dev = None
-        self.mean = None
+        self.ret_rms = RunningMeanStd(shape=())
 
     def update(self, scores):
-        with torch.no_grad():
-            mean = scores.mean()
-            std_dev = scores.std()
-            mean = 0.0 if math.isnan(mean) else mean
-            std_dev = 0.0 if math.isnan(std_dev) else std_dev
-            if self.std_dev is None:
-                self.std_dev = std_dev
-                self.mean = mean
-            else:
-                self.std_dev = self.std_dev * self.alpha + std_dev * self.beta
-                self.mean = self.mean * self.alpha + mean * self.beta
+        self.ret_rms.update(scores.cpu().numpy())
 
     def scale(self, score):
-        if self.std_dev is None:
-            if self.shift_mean:
-                return torch.zeros_like(score)
-            return (score * self.scale_by).clamp(*self.clamp_by)
         return (
-            (score - (self.mean if self.shift_mean else 0))
+            (score - (torch.tensor(self.ret_rms.mean) if self.shift_mean else 0))
             * self.scale_by
-            / self.std_dev
+            / (torch.tensor(self.ret_rms.var) + 1e-8) ** 0.5
         ).clamp(*self.clamp_by)
 
 

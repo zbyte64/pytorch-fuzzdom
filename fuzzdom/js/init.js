@@ -116,6 +116,7 @@ window.core = Object.assign(
         element.click();
         element.focus();
         element.value = text;
+        element.dispatchEvent(new Event('change', {bubbles: true}));
         return true;
       }
     },
@@ -143,7 +144,7 @@ window.core = Object.assign(
       loop(domInfo, document.body, 0);
       return domInfo;
     },
-    logs: {},
+    logs: {windowError: []},
     getLogs: function () {
       ret = window.core.logs;
       window.core.logs = {};
